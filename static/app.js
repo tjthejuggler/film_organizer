@@ -313,6 +313,44 @@ document.addEventListener("click", async e => {
 /* ---------- delete-choice popup ---------- */
 let delTarget = null;
 
+async function refreshDriveQueue() {
+  if ($("#modal").classList.contains("hidden")) return;
+  const { groups, pending } = await api("/api/drive-queue");
+  $("#queueHint").textContent = pending ? `${pending} queued` : "";
+  $("#queueList").innerHTML = groups.length ? groups.map(g => `
+    <li class="qdrive">
+      <span class="path" title="${esc(g.drive)}">💾 ${esc(g.drive)}</span>
+      ${g.mounted
+        ? '<span class="st" style="color:var(--ok)">connected — will run now</span>'
+        : '<span class="off">waiting for connection</span>'}
+    </li>
+    ${g.items.map(it => `
+    <li class="qitem">
+      <span class="path" title="${esc(it.description)}">${esc(it.description)}</span>
+      <span class="st">${fmtDate(it.created_at)}</span>
+      <button class="btn mini ghost" data-cancel-queue="${it.id}" title="Remove from queue">✕</button>
+    </li>`).join("")}`).join("")
+    : '<li><span class="dim">Nothing queued — every drive is caught up. 🎉</span></li>';
+}
+
+$("#queueList").addEventListener("click", async e => {
+  const b = e.target.closest("[data-cancel-queue]");
+  if (!b) return;
+  try {
+    await api(`/api/drive-queue/${b.dataset.cancelQueue}`, { method: "DELETE" });
+    refreshDriveQueue();
+  } catch (err) { alert(err.message); }
+});
+$("#btnRunQueue").onclick = async () => {
+  try {
+    const r = await api("/api/drive-queue/run", { method: "POST" });
+    $("#queueHint").textContent = r.started.length
+      ? `Started ${r.started.length} queued job(s)…`
+      : "Nothing to run — connect the drives first.";
+    setTimeout(refreshDriveQueue, 1500);
+  } catch (err) { alert(err.message); }
+};
+
 function openDeleteChoice(t) {
   delTarget = t;
   $("#delName").textContent = `"${t.title}"`;
@@ -344,7 +382,10 @@ async function runDelete(keepRecord) {
   try {
     const q = keepRecord ? "?keep_record=true" : "";
     const r = await api(`/api/titles/${t.id}/files${q}`, { method: "DELETE" });
-    if (r.kept_record) {
+    if (r.queued) {
+      alert(`"${r.title}" needs ${r.drives.length > 1 ? "these drives" : "this drive"}: ${r.drives.join(", ")}.
+The deletion was queued and runs automatically when ${r.drives.length > 1 ? "they are" : "it is"} connected (Settings → Drive queues).`);
+    } else if (r.kept_record) {
       alert(`Deleted the file(s) of "${r.title}" (${r.removed_files} removed).
 The entry stays in your list as a record.`);
     } else {
@@ -354,7 +395,7 @@ The entry stays in your list as a record.`);
     }
     load();
   } catch (err) {
-    alert(err.message); // includes "Connect these drives first: …" on 409
+    alert(err.message); // includes "Connect these drives first: …" on 409 (queue=off)
   }
 }
 
@@ -505,7 +546,12 @@ async function openDrawer(id) {
     if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to the ${label} folder?`)) return;
     try {
       const r = await api(`/api/titles/${id}/move`, { method: "POST", body: { target } });
-      watchJob(r.job_id, `Move → ${label}`);
+      if (r.queued) {
+        alert(`The ${label} drive (${r.drive}) is not connected right now.
+The move was queued and runs automatically when it is connected (Settings → Drive queues).`);
+      } else {
+        watchJob(r.job_id, `Move → ${label}`);
+      }
     } catch (err) { alert(err.message); }
   };
   $("#dMoveInt").onclick = () => doMove("internal");
@@ -575,6 +621,7 @@ async function openSettings() {
       <button class="btn mini ghost" data-del-root="${r.id}">✕</button>
     </li>`).join("");
   $("#modal").classList.remove("hidden");
+  refreshDriveQueue(); // per-drive pending operations (moves/deletes)
 }
 $("#btnSettings").onclick = openSettings;
 $("#mClose").onclick = () => $("#modal").classList.add("hidden");
@@ -1043,6 +1090,12 @@ async function delCopy(btn, payload, what) {
     // root as query param: immune to content-type/422 quirks
     const q = payload.root ? `?root=${encodeURIComponent(payload.root)}` : "";
     const r = await api(`/api/duplicates/${payload.title_id}${q}`, { method: "DELETE" });
+    if (r.queued) {
+      btn.textContent = "queued for drive connect";
+      alert(`That copy's drive (${r.drives.join(", ")}) is not connected.
+The deletion was queued and runs automatically when it is connected (Settings → Drive queues).`);
+      return;
+    }
     // instant feedback: remove the copy row, then re-check the group
     const copyRow = btn.closest(".dupcopy");
     if (copyRow) copyRow.remove();
@@ -1273,6 +1326,10 @@ $("#notifPanel").addEventListener("click", async e => {
       item.remove();
       if (!$$("#notifPanel .notifitem").length)
         $("#notifPanel").innerHTML = '<div class="notifdone">All caught up 🎉</div>';
+      if (r.status === "queued") {
+        alert(`The backup drive is not connected right now.
+The move was queued and runs automatically when it is connected (Settings → Drive queues).`);
+      }
       refreshBellPill(); load();
     } else {
       // drive offline (or move failed): stay pending, show which drive to plug in
@@ -1297,6 +1354,7 @@ function watchDrives() {
       // debounce: a single plug/unplug can emit several signature flips
       driveReloadTimer = setTimeout(() => {
         load(); renderRootOptions(); refreshBellPill();
+        refreshDriveQueue(); // a queue entry may have just become runnable
       }, 400);
     };
   } catch (e) { /* EventSource unavailable — manual refresh still works */ }

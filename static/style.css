@@ -242,6 +242,10 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 .roots .path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roots .off { color: var(--warn); font-size: 11px; border: 1px solid var(--warn); padding: 0 6px; border-radius: 999px; }
 .roots .st { color: var(--dim); font-size: 11.5px; flex: none; }
+.queuelist .qdrive { font-weight: 600; }
+.queuelist .qdrive .path { flex: none; max-width: 60%; }
+.queuelist .qitem { padding-left: 18px; opacity: .95; }
+.queuelist .qitem .path { flex: 1; }
 .addroot { display: flex; gap: 8px; margin-top: 8px; }
 .addroot input { flex: 1; background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 10px; }
 .descwrap { margin: 10px 0; }

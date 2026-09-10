@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, duplicates, enrich, jobs, llm, mover, notifications, recommender, scanner, tmdb, watchnext
+from . import config, db, drivequeue, duplicates, enrich, jobs, llm, mover, notifications, recommender, scanner, tmdb, watchnext
 
 db.init()
 
@@ -27,6 +27,9 @@ def _startup_refill():
         recommender.maybe_refill("startup")
     except Exception:
         pass  # never block boot over recommendations
+    # drive-queue worker: runs queued moves/deletes whenever their drive
+    # gets connected — also drains anything queued while the app was off
+    threading.Thread(target=drivequeue.worker_loop, daemon=True).start()
 
 
 @app.middleware("http")
@@ -750,7 +753,7 @@ def delete_title(tid: int):
 
 
 @app.delete("/api/titles/{tid}/files")
-def delete_title_files(tid: int, keep_record: bool = False):
+def delete_title_files(tid: int, keep_record: bool = False, queue: bool = True):
     """Delete a title's files from disk (main-list trash button).
 
     keep_record=false: the catalog entry is removed too (full delete).
@@ -758,8 +761,9 @@ def delete_title_files(tid: int, keep_record: bool = False):
     this is how 'watched it, then deleted it' keeps its watched state, and
     also how unwatched titles can be recorded as owned-but-discarded.
 
-    Refuses with 409 + drive list when any source drive is offline, so the
-    catalog never claims 'deleted' while bytes remain on a sleeping disk."""
+    When any source drive is offline the deletion is placed in the drive
+    queue (one entry per offline drive) and runs automatically once that
+    drive is connected; queue=false restores the legacy 409 refusal."""
     row = _get_title_or_404(tid)
     # id needed for the keep-record path (per-row DELETE in _delete_title_files)
     files = [dict(f) for f in db.q(
@@ -788,9 +792,28 @@ def delete_title_files(tid: int, keep_record: bool = False):
         if rt and not os.path.isdir(rt):
             offline.add(rt)
     if offline:
-        raise HTTPException(
-            409, "Connect these drives first, then retry: "
-            + ", ".join(sorted(offline)))
+        if not queue:
+            raise HTTPException(
+                409, "Connect these drives first, then retry: "
+                + ", ".join(sorted(offline)))
+        drives = sorted(offline)
+        queued = []
+        for d in drives:
+            qid, created = drivequeue.enqueue(
+                "delete", tid, d,
+                {"keep_record": keep_record, "drives": drives},
+                f"Delete '{row['title']}' files on {d}")
+            if created:
+                queued.append(qid)
+        # files on connected drives (and missing ghosts) go right away;
+        # the queued entries handle their drives and the last one finalizes
+        # the catalog entry
+        connected = [f for f in files if root_of(f["path"]) not in offline]
+        if connected:
+            duplicates._delete_title_files(connected, tid, delete_row=False)
+        return {"ok": True, "queued": True, "queue_ids": queued,
+                "removed_files": len(connected),
+                "title": row["title"], "drives": drives}
 
     result = duplicates._delete_title_files(files, tid, delete_row=not keep_record)
     if keep_record:
@@ -938,7 +961,17 @@ def get_job(jid: str):
 def move_title(tid: int, body: MoveIn):
     if body.target not in ("internal", "external"):
         raise HTTPException(400, "target must be 'internal' or 'external'")
-    _get_title_or_404(tid)  # 404 early; mover raises ValueError for config issues
+    row = _get_title_or_404(tid)  # 404 early; mover raises ValueError for config issues
+    # target drive not connected right now? queue it — runs automatically
+    # the moment the drive is plugged in (Settings shows what is waiting)
+    dest = db.settings_get(f"{body.target}_root")
+    if dest and not os.path.isdir(os.path.abspath(dest)):
+        dest = os.path.abspath(dest)
+        qid, created = drivequeue.enqueue(
+            "move", tid, dest, {"target": body.target},
+            f"Move '{row['title']}' to {dest}")
+        return {"job_id": None, "queued": True, "queue_id": qid,
+                "queued_now": created, "drive": dest}
     jid = jobs.create("move", total=0)
     jobs.log(jid, f"Move requested: title {tid} -> {body.target}")
 
@@ -1007,14 +1040,52 @@ class DeleteCopyIn(BaseModel):
 
 
 @app.delete("/api/duplicates/{tid}")
-def delete_duplicate_copy(tid: int, root: str = None, body: DeleteCopyIn = None):
+def delete_duplicate_copy(tid: int, root: str = None, queue: bool = True,
+                          body: DeleteCopyIn = None):
     # root as query param preferred (robust against stale/cached clients);
     # JSON body accepted too
     r = root if root is not None else (body.root if body else None)
     try:
         return duplicates.delete_copy(tid, root=r)
     except ValueError as e:
+        msg = str(e)
+        # offline-drive refusal -> queue the deletion for that drive
+        if queue and msg.startswith("Connect these drives first:") and r:
+            drives = [d.strip() for d in msg.split(":", 1)[1].split(",") if d.strip()]
+            title = db.q1("SELECT title FROM titles WHERE id=?", (tid,))
+            queued = []
+            for d in drives:
+                qid, created = drivequeue.enqueue(
+                    "delete_copy", tid, d, {"root": r, "drives": drives},
+                    f"Delete duplicate copy of '{title['title'] if title else tid}' on {d}")
+                if created:
+                    queued.append(qid)
+            return {"ok": True, "queued": True, "queue_ids": queued,
+                    "drives": drives}
+        raise HTTPException(400, msg)
+
+
+@app.get("/api/drive-queue")
+def list_drive_queue():
+    """Pending drive-queue entries grouped per drive (Settings panel)."""
+    return {"groups": drivequeue.list_pending(),
+            "pending": drivequeue.pending_count()}
+
+
+@app.delete("/api/drive-queue/{qid}")
+def cancel_drive_queue(qid: int):
+    """Remove a pending entry before its drive gets connected."""
+    try:
+        drivequeue.cancel(qid)
+        return {"ok": True}
+    except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/api/drive-queue/run")
+def run_drive_queue():
+    """Manual drain: runs every queued entry whose drive is connected."""
+    return {"ok": True, "started": drivequeue.run_due()}
 
 
 # ---- film recommender (LLM researcher + queue) -----------------------------
@@ -1136,6 +1207,13 @@ def _drives_signature() -> str:
     return hashlib.sha1((mounts + "|" + roots).encode()).hexdigest()
 
 
+def _safe_queue_drain():
+    try:
+        drivequeue.run_due()
+    except Exception:
+        pass  # the poller thread will retry
+
+
 @app.get("/api/events/drives")
 async def drive_events():
     """Server-sent events fired whenever a drive connects or disconnects.
@@ -1149,6 +1227,9 @@ async def drive_events():
             cur = _drives_signature()
             if cur != last:
                 last = cur
+                # a drive may have just connected: kick the queue in the
+                # background (a move can take minutes — never block SSE)
+                threading.Thread(target=_safe_queue_drain, daemon=True).start()
                 yield f"data: {json.dumps({'signature': cur})}\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store"})

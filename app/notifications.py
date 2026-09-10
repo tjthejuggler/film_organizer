@@ -107,13 +107,13 @@ def _offline_backup_roots() -> set:
     return set() if os.path.isdir(ext) else {ext}
 
 
-def decide(notification_id: int, decision: str):
+def decide(notification_id: int, decision: str, queue_when_offline: bool = True):
     """Apply the user's verdict: 'accept' (move to backup) or 'reject'.
 
     Accepting starts the move job synchronously via the mover; when the
-    backup drive is not plugged in the notification STAYS pending and the
-    error names the missing drive path so the UI can tell the user exactly
-    what to plug in."""
+    backup drive is not plugged in the move is put into the persistent
+    drive queue and runs automatically the moment the drive is connected
+    (queue_when_offline=False restores the legacy 'stay pending' reply)."""
     n = q1("SELECT * FROM notifications WHERE id=?", (notification_id,))
     if not n:
         raise ValueError("notification not found")
@@ -133,6 +133,23 @@ def decide(notification_id: int, decision: str):
     # drive check BEFORE any bytes move: tell the user which drive to plug in
     offline = _offline_backup_roots()
     if offline:
+        from . import drivequeue
+        if queue_when_offline:
+            trow = q1("SELECT title FROM titles WHERE id=?", (n["title_id"],))
+            tname = trow["title"] if trow else f"#{n['title_id']}"
+            qid, created = drivequeue.enqueue(
+                "move", n["title_id"], sorted(offline)[0],
+                {"target": "external", "notification_id": notification_id},
+                f"Move '{tname}' to the backup drive")
+            if created:
+                with tx() as c:
+                    c.execute(
+                        "UPDATE notifications SET status='queued', decided_at=? "
+                        "WHERE id=?", (_now(), notification_id))
+            return {"ok": True, "status": "queued",
+                    "queued": created,
+                    "queue_id": qid,
+                    "missing_drives": sorted(offline)}
         return {
             "ok": False,
             "status": "pending",

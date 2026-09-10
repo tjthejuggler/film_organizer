@@ -142,12 +142,29 @@ CREATE TABLE IF NOT EXISTS notifications(
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     title_id   INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
     type       TEXT NOT NULL DEFAULT 'watched_backup',
-    status     TEXT NOT NULL DEFAULT 'pending',  -- pending | done | rejected | failed
+    status     TEXT NOT NULL DEFAULT 'pending',  -- pending | done | rejected | failed | queued
     message    TEXT,
     created_at TEXT,
     decided_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
+CREATE TABLE IF NOT EXISTS drive_queue(
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL,   -- move | delete | delete_copy
+    -- deliberately NO foreign key: the finalize step of a queued delete
+    -- removes the title row itself and must not cascade-erase this entry
+    title_id    INTEGER,
+    payload     TEXT,            -- JSON: target/root/keep_record/drives/notification_id
+    drive       TEXT NOT NULL,   -- primary drive the entry waits for
+    description TEXT,            -- human-readable, shown in Settings
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending|running|done|error|cancelled
+    last_error  TEXT,
+    job_id      TEXT,            -- jobs.id of the auto-started run
+    created_at  TEXT DEFAULT (datetime('now')),
+    ran_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_drive_queue_status ON drive_queue(status);
+CREATE INDEX IF NOT EXISTS idx_drive_queue_drive  ON drive_queue(drive);
 """
 
 
@@ -192,6 +209,27 @@ def ensure():
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
         if "created" not in fcols:
             con.execute("ALTER TABLE files ADD COLUMN created REAL")
+        # drive_queue built before the FK removal would cascade-erase queue
+        # history whenever a queued delete removed its title row: rebuild
+        if con.execute("PRAGMA foreign_key_list(drive_queue)").fetchone():
+            con.executescript(
+                "ALTER TABLE drive_queue RENAME TO drive_queue_legacy;"
+                "CREATE TABLE drive_queue("
+                "    id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "    kind        TEXT NOT NULL,"
+                "    title_id    INTEGER,"
+                "    payload     TEXT,"
+                "    drive       TEXT NOT NULL,"
+                "    description TEXT,"
+                "    status      TEXT NOT NULL DEFAULT 'pending',"
+                "    last_error  TEXT,"
+                "    job_id      TEXT,"
+                "    created_at  TEXT DEFAULT (datetime('now')),"
+                "    ran_at      TEXT);"
+                "INSERT INTO drive_queue SELECT * FROM drive_queue_legacy;"
+                "DROP TABLE drive_queue_legacy;"
+                "CREATE INDEX IF NOT EXISTS idx_drive_queue_status ON drive_queue(status);"
+                "CREATE INDEX IF NOT EXISTS idx_drive_queue_drive  ON drive_queue(drive);")
         # indexes on migrated columns must come after the ALTERs above
         con.execute("CREATE INDEX IF NOT EXISTS idx_titles_wanted ON titles(wanted)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_titles_fav ON titles(favorite)")

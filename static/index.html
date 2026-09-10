@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Film Organizer</title>
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css?v=9">
+<link rel="stylesheet" href="/style.css?v=10">
 </head>
 <body>
 <header>
@@ -144,6 +144,15 @@
       </div>
     </section>
 
+    <section>
+      <h3>Drive queues <span id="queueHint" class="st"></span></h3>
+      <p class="hint">Moves and deletes that need an unplugged drive wait here and run automatically the moment you connect it.</p>
+      <ul id="queueList" class="roots queuelist"></ul>
+      <div class="dupeRow">
+        <button class="btn mini" id="btnRunQueue" title="Run every queued item whose drive is connected right now">▶ Run ready now</button>
+      </div>
+    </section>
+
     <div class="sfoot">
       <button class="btn primary" id="mSave">Save settings</button>
     </div>
@@ -237,6 +246,6 @@
   <pre id="tLog"></pre>
 </div>
 
-<script src="/app.js?v=11"></script>
+<script src="/app.js?v=12"></script>
 </body>
 </html>

@@ -167,6 +167,21 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-10 (12)** — **drive queues**: operations that need an unplugged
+  drive no longer dead-end. Moving to internal/external, deleting a title's
+  files, deleting a duplicate copy, and accepting a watched→backup
+  notification are all placed in a persistent [`drive_queue`](app/db.py)
+  table when their drive is offline and **run automatically the moment the
+  drive is connected** — via a background poller
+  ([`drivequeue.worker_loop()`](app/drivequeue.py)), an SSE hook on drive
+  connect, and a "▶ Run ready now" button. New **Settings → Drive queues**
+  panel lists pending work grouped per drive (with mounted status and a
+  cancel button per entry). Queueing is deduplicated (same
+  kind+title+drive is never doubled). API: `GET /api/drive-queue`,
+  `DELETE /api/drive-queue/{id}`, `POST /api/drive-queue/run`; the delete
+  endpoint grew `?queue=false` to restore the old hard refusal.
+  [`notifications.decide()`](app/notifications.py) now marks accepted
+  notifications as `queued` while the drive is away.
 - **2026-09-10 (11)** — **miniseries tags fixed** (was: only 1 of 213 series
   tagged). Three compounding causes, all fixed: ① the ✨ Enrich button only
   processes *unmatched* rows, so already-matched series were never asked
