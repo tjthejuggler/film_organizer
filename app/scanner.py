@@ -213,7 +213,7 @@ def scan_roots(job_id: str, roots: list):
 
     with tx() as c:
         for g in groups.values():
-            row = q1("SELECT id, watched_folder, watched_at FROM titles WHERE dedupe_key=?", (g["key"],))
+            row = q1("SELECT id, watched_folder, watched_at, wanted FROM titles WHERE dedupe_key=?", (g["key"],))
             if row is None:
                 c.execute(
                     """INSERT INTO titles(dedupe_key, kind, title, year, cataloged_at,
@@ -223,9 +223,14 @@ def scan_roots(job_id: str, roots: list):
                 )
                 tid = q1("SELECT id FROM titles WHERE dedupe_key=?", (g["key"],))["id"]
                 was = wat = None
+                was_wanted = 0
+                had_files = False
             else:
                 tid = row["id"]
                 was, wat = row["watched_folder"], row["watched_at"]
+                was_wanted = row["wanted"] or 0
+                had_files = bool(q1(
+                    "SELECT 1 FROM files WHERE title_id=? AND missing=0 LIMIT 1", (tid,)))
 
             for f in g["files"]:
                 # EARLIEST of file/folder creation wins: a folder created
@@ -282,11 +287,19 @@ def scan_roots(job_id: str, roots: list):
             new_wat = wat
             if nw and not was:
                 new_wat = scan_started
+            # A wishlist row that just gained its first files is ADOPTED:
+            # the wanted flag flips off. A manually-wanted owned title keeps
+            # its flag (had_files was already true before this scan).
+            adopt = 1 if (was_wanted and not had_files and size > 0) else 0
             c.execute(
                 """UPDATE titles SET last_seen=?, size_bytes=?, seasons=?,
-                   episode_count=?, watched_folder=?, watched_at=? WHERE id=?""",
-                (scan_started, size, n_seasons or None, n_eps, nw, new_wat, tid),
+                   episode_count=?, watched_folder=?, watched_at=?,
+                   wanted=CASE WHEN ? THEN 0 ELSE wanted END WHERE id=?""",
+                (scan_started, size, n_seasons or None, n_eps, nw, new_wat, adopt, tid),
             )
+            if adopt:
+                from .jobs import log
+                log(job_id, f"Wanted title now on disk: {g['title']} (wanted flag cleared)")
 
         # flag vanished files, but only under roots we actually scanned
         for root in planned:
@@ -294,8 +307,9 @@ def scan_roots(job_id: str, roots: list):
                 "UPDATE files SET missing=1 WHERE missing=0 AND last_seen < ? AND (path = ? OR path LIKE ?)",
                 (scan_started, root, root + os.sep + "%"),
             )
-        # drop titles that no longer have any files
-        c.execute("DELETE FROM titles WHERE id NOT IN (SELECT DISTINCT title_id FROM files)")
+        # drop titles that no longer have any files — but keep WISHLIST rows:
+        # a wanted title has no files by design until it is acquired
+        c.execute("DELETE FROM titles WHERE wanted=0 AND id NOT IN (SELECT DISTINCT title_id FROM files)")
 
     update(job_id, progress=total, message=f"Done: {len(groups)} titles, {done} files")
     log(job_id, "Scan complete.")

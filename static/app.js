@@ -4,6 +4,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
 const state = {
   q: "", kind: "", watched: "", genre: "", root: "", match: "!not_found", missing: false,
+  wanted: "",
   sort: "title", dir: "asc",
   titles: [], genres: [],
 };
@@ -51,6 +52,7 @@ async function load() {
   if (state.root) p.set("root", state.root);
   if (state.match) p.set("match", state.match);
   if (state.missing) p.set("missing_on", "1");
+  if (state.wanted) p.set("wanted", state.wanted);
   p.set("sort", state.sort); p.set("direction", state.dir);
   // stats use the SAME filter params (minus sort) so the top bar reflects
   // everything that made it through the current filter
@@ -85,15 +87,26 @@ function locBadge(path) {
   return path.replace(/^\/home\/[^/]+/, "~").replace(/\/$/, "");
 }
 
+/* clickable person chips fill the search box */
+function personChip(name, prefix) {
+  if (!name) return "";
+  return `<span class="person" data-person="${esc(name)}" title="Search ${esc(prefix)}: ${esc(name)}">${esc(name)}</span>`;
+}
+
+function fmtRuntime(t) {
+  if (!t.runtime) return "—";
+  return t.kind === "series" ? `${t.runtime}m/ep` : `${t.runtime}m`;
+}
+
 function renderRows() {
   const tb = $("#rows");
   $("#empty").classList.toggle("hidden", state.titles.length > 0);
   tb.innerHTML = state.titles.map(t => {
     const rating = t.rating_imdb || t.rating_tmdb;
-    const stars = (t.stars || []).slice(0, 3).join(", ");
-    const who = t.kind === "series"
-      ? (t.creator ? `Created by ${esc(t.creator)}` : "")
-      : (t.director ? `Dir. ${esc(t.director)}` : "");
+    const starChips = (t.stars || []).slice(0, 3).map(s => personChip(s, "actor")).join(", ");
+    const whoPerson = t.kind === "series"
+      ? (t.creator ? `Created by ${personChip(t.creator, "creator")}` : "")
+      : (t.director ? `Dir. ${personChip(t.director, "director")}` : "");
     const metas = [];
     if (t.kind === "series" && t.seasons) metas.push(`${t.seasons} season${t.seasons > 1 ? "s" : ""}`);
     if (t.episode_count) metas.push(`${t.episode_count} ep file${t.episode_count > 1 ? "s" : ""}`);
@@ -106,31 +119,33 @@ function renderRows() {
     const watched = t.watched;
     const genreTags = (t.genres || []).slice(0, 3).map(g =>
       `<span class="badge genre">${esc(g)}</span>`).join("");
-    return `<tr data-id="${t.id}" class="${watched ? "watched" : ""}">
+    const wantedBadge = t.wanted ? '<span class="badge wanted" title="On the wishlist — submitted via API or toggled here">★ wanted</span>' : "";
+    return `<tr data-id="${t.id}" class="${watched ? "watched" : ""}${t.wanted ? " is-wanted" : ""}">
       <td><div class="tcell">
         ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
                    : `<div class="thumb ph">🎬</div>`}
         <div>
           <div class="tname">${esc(t.title)}</div>
-          <div class="tsub" title="${esc(t.overview || "")}">${esc(t.overview || "")}</div>
           <div style="margin-top:3px">
-            <span class="badge ${t.kind}">${t.kind}</span>${matchBadge}
+            <span class="badge ${t.kind}">${t.kind}</span>${wantedBadge}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
             ${genreTags}
           </div>
         </div>
       </div></td>
       <td>${t.year || "—"}</td>
-      <td class="c">${t.kind === "series" ? "📺" : "🎞️"}</td>
+      <td class="c">${fmtRuntime(t)}</td>
       <td class="c">${t.cert ? `<span class="cert">${esc(t.cert)}</span>` : "—"}</td>
       <td class="c">${rating ? `<span class="rating">★ ${rating.toFixed(1)}</span>` : "—"}</td>
       <td class="c">${t.rating_rt != null ? `<span class="rt ${t.rating_rt >= 60 ? "fresh" : "rotten"}">${t.rating_rt}%</span>` : "—"}</td>
-      <td class="meta-col">${esc(stars)}${stars && who ? "<br>" : ""}${who}</td>
+      <td class="meta-col">${starChips}${starChips && whoPerson ? "<br>" : ""}${whoPerson}</td>
       <td class="where">${(t.locations || []).map(l =>
         `<span class="loc" title="${esc(l)}">${esc(locBadge(l))}</span>`).join("")}</td>
-      <td class="r">${fmtSize(t.size_bytes)}</td>
+      <td class="r">${t.wanted ? "—" : fmtSize(t.size_bytes)}</td>
       <td title="${t.created_at ? "created" : "created unknown — showing catalog date (files on offline drive)"}">${fmtDate(t.created_at || t.cataloged_at)}</td>
-      <td class="c">
+      <td class="actions">
+        <button class="wbtn fav ${t.favorite ? "on" : ""}" data-fav="${t.id}"
+          title="${t.favorite ? "Remove from favorites" : "Mark as favorite"}">♥</button>
         <button class="wbtn ${watched ? "on" : ""}" data-watched="${t.id}"
           title="${watched ? "Mark unwatched" : "Mark watched"}">✓</button>
         <button class="wbtn del" data-deltitle="${t.id}" data-name="${esc(t.title)}"
@@ -165,8 +180,16 @@ $$("#watchChips .chip").forEach(c => c.addEventListener("click", () => {
 }));
 $("#genreSel").addEventListener("change", e => { state.genre = e.target.value; load(); });
 $("#rootSel").addEventListener("change", e => { state.root = e.target.value; load(); });
+$("#wantedSel").addEventListener("change", e => { state.wanted = e.target.value; load(); });
 $("#matchSel").addEventListener("change", e => { state.match = e.target.value; load(); });
 $("#onlyMissing").addEventListener("change", e => { state.missing = e.target.checked; load(); });
+
+/* click a director/actor/creator chip -> fills the search box */
+function searchPerson(name) {
+  $("#search").value = name;
+  state.q = name;
+  load();
+}
 
 /* ---------- watched toggle + delete + row click (delegation) ---------- */
 document.addEventListener("click", async e => {
@@ -205,11 +228,40 @@ document.addEventListener("click", async e => {
     }
     return;
   }
+  const fav = e.target.closest("[data-fav]");
+  if (fav) {
+    e.stopPropagation();
+    const id = fav.dataset.fav;
+    const t = state.titles.find(x => String(x.id) === String(id));
+    try {
+      await api(`/api/titles/${id}/favorite`, { method: "POST", body: { value: !t.favorite } });
+      t.favorite = !t.favorite;
+      renderRows();
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const chip = e.target.closest("[data-person]");
+  if (chip) {
+    e.stopPropagation();
+    searchPerson(chip.dataset.person);
+    return;
+  }
   const tr = e.target.closest("tr[data-id]");
   if (tr) openDrawer(+tr.dataset.id);
 });
 
 /* ---------- drawer ---------- */
+const EDIT_FIELDS = [
+  ["runtime", "Runtime (min) — episode length for series", "number"],
+  ["rating_imdb", "IMDb rating (0-10)", "number", "0.1"],
+  ["rating_tmdb", "TMDB rating (0-10)", "number", "0.1"],
+  ["rating_rt", "Rotten Tomatoes %", "number", "1"],
+  ["votes_imdb", "IMDb votes", "number", "1"],
+  ["cert", "Content rating (e.g. PG-13)", "text"],
+  ["seasons", "Seasons", "number"],
+  ["episodes", "Episodes", "number"],
+];
+
 async function openDrawer(id) {
   const t = await api(`/api/titles/${id}`);
   const facts = [
@@ -226,9 +278,15 @@ async function openDrawer(id) {
     ${t.backdrop ? `<img class="back" src="${esc(t.backdrop)}">` : ""}
     <h2>${esc(t.title)} ${t.year ? `<span style="color:var(--dim)">(${t.year})</span>` : ""}</h2>
     <div class="facts">${esc(facts)}</div>
+    <div class="flagrow">
+      <button class="btn mini ${t.favorite ? "primary" : ""}" id="dFav">${t.favorite ? "♥ Favorite" : "♡ Favorite"}</button>
+      <button class="btn mini ${t.wanted ? "primary" : ""}" id="dWanted">${t.wanted ? "★ Wanted" : "☆ Not wanted"}</button>
+      <button class="btn mini" id="dWatch">${t.watched ? "✓ Watched" : "Mark watched"}</button>
+    </div>
     ${(t.genres || []).map(g => `<span class="badge genre">${esc(g)}</span>`).join(" ")}
     ${t.cert ? `<span class="cert" title="Content rating">${esc(t.cert)}</span>` : ""}
     ${t.rating_rt != null ? `<span class="rt ${t.rating_rt >= 60 ? "fresh" : "rotten"}" title="Rotten Tomatoes">🍅 ${t.rating_rt}%</span>` : ""}
+    ${t.wanted && t.wanted_note ? `<p class="hint">Wanted — ${esc(t.wanted_note)}${t.wanted_by ? ` (via ${esc(t.wanted_by)})` : ""}</p>` : ""}
     <div class="descwrap">
       <button class="btn mini" id="dDescBtn">Show description</button>
       <p class="overview hidden" id="dDesc">${esc(descText)}</p>
@@ -241,14 +299,41 @@ async function openDrawer(id) {
     <dl>
       ${t.rating_imdb ? `<dt>IMDb</dt><dd>★ ${t.rating_imdb} (${(t.votes_imdb || 0).toLocaleString()} votes)</dd>` : ""}
       ${t.rating_tmdb ? `<dt>TMDB</dt><dd>★ ${t.rating_tmdb}</dd>` : ""}
-      ${t.director ? `<dt>Director</dt><dd>${esc(t.director)}</dd>` : ""}
-      ${t.creator ? `<dt>Created by</dt><dd>${esc(t.creator)}</dd>` : ""}
-      ${(t.stars || []).length ? `<dt>Stars</dt><dd>${esc(t.stars.join(", "))}</dd>` : ""}
+      ${t.director ? `<dt>Director</dt><dd><span class="person" data-person="${esc(t.director)}">${esc(t.director)}</span></dd>` : ""}
+      ${t.creator ? `<dt>Created by</dt><dd><span class="person" data-person="${esc(t.creator)}">${esc(t.creator)}</span></dd>` : ""}
+      ${(t.stars || []).length ? `<dt>Stars</dt><dd>${(t.stars || []).map(s => `<span class="person" data-person="${esc(s)}">${esc(s)}</span>`).join(", ")}</dd>` : ""}
       <dt>Created on disk</dt><dd>${fmtDate(t.created_at)}</dd>
       <dt>Cataloged</dt><dd>${fmtDate(t.cataloged_at)}</dd>
-      <dt>Watched</dt><dd>${t.watched ? "yes" : "no"}
-        <button class="btn mini" id="dWatch" style="margin-left:8px">${t.watched ? "Mark unwatched" : "Mark watched"}</button></dd>
     </dl>
+
+    <details class="editbox" id="editBox">
+      <summary>Edit details (fix wrong metadata)</summary>
+      <p class="hint">Edited fields are locked — <b>Enrich</b> will not overwrite them. Clearing a field unlocks it for refetch.</p>
+      <div class="egrid">
+        <label style="grid-column:1/-1">Title<input id="e_title" value="${esc(t.title)}"></label>
+        <label>Kind
+          <select id="e_kind">
+            <option value="movie" ${t.kind === "movie" ? "selected" : ""}>movie</option>
+            <option value="series" ${t.kind === "series" ? "selected" : ""}>series</option>
+          </select>
+        </label>
+        <label>Year<input id="e_year" type="number" value="${t.year ?? ""}"></label>
+        ${EDIT_FIELDS.map(([k, lab, ty, step]) => `
+          <label>${lab}${(t.manual_edits || []).includes(k) ? ' <span class="locked" title="Manually edited — Enrich skips this field">🔒</span>' : ""}<input id="e_${k}" type="${ty}"${step ? ` step="${step}"` : ""} value="${t[k] ?? ""}"></label>`).join("")}
+        <label style="grid-column:1/-1">Director<input id="e_director" value="${esc(t.director || "")}"></label>
+        <label style="grid-column:1/-1">Created by<input id="e_creator" value="${esc(t.creator || "")}"></label>
+        <label style="grid-column:1/-1">Network<input id="e_network" value="${esc(t.network || "")}"></label>
+        <label style="grid-column:1/-1">Stars (comma-separated)<input id="e_stars" value="${esc((t.stars || []).join(", "))}"></label>
+        <label style="grid-column:1/-1">Genres (comma-separated)<input id="e_genres" value="${esc((t.genres || []).join(", "))}"></label>
+        <label style="grid-column:1/-1">Description<textarea id="e_overview" rows="3">${esc(t.overview || "")}</textarea></label>
+      </div>
+      <div class="editrow">
+        <button class="btn mini primary" id="eSave">Save changes</button>
+        <button class="btn mini ghost" id="eRevert">Revert</button>
+        <span class="hint">Changing title/kind/year re-keys the row and clears enrichment for a fresh match.</span>
+      </div>
+    </details>
+
     <h3 style="margin-bottom:6px">Files on disk</h3>
     <div class="filelist">
       ${t.files.map(f => `
@@ -270,6 +355,14 @@ async function openDrawer(id) {
     await api(`/api/titles/${id}/watched`, { method: "POST", body: { watched: !t.watched } });
     openDrawer(id); load();
   };
+  $("#dFav").onclick = async () => {
+    await api(`/api/titles/${id}/favorite`, { method: "POST", body: { value: !t.favorite } });
+    openDrawer(id); load();
+  };
+  $("#dWanted").onclick = async () => {
+    await api(`/api/titles/${id}/wanted`, { method: "POST", body: { value: !t.wanted } });
+    openDrawer(id); load();
+  };
   const doMove = async target => {
     const label = target === "internal" ? "internal" : "external";
     if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to the ${label} folder?`)) return;
@@ -280,8 +373,42 @@ async function openDrawer(id) {
   };
   $("#dMoveInt").onclick = () => doMove("internal");
   $("#dMoveExt").onclick = () => doMove("external");
+
+  // ---- edit details ----
+  $("#eSave").onclick = async () => {
+    const val = k => { const el = $("#e_" + k); return el ? el.value.trim() : null; };
+    const numOrNull = k => { const v = val(k); return v === "" || v === null ? null : Number(v); };
+    const textOrNull = k => { const v = val(k); return v === "" ? null : v; };
+    const patch = {
+      title: textOrNull("title"),
+      kind: $("#e_kind").value,
+      year: numOrNull("year"),
+      overview: textOrNull("overview"),
+      director: textOrNull("director"),
+      creator: textOrNull("creator"),
+      network: textOrNull("network"),
+      stars: val("stars").split(",").map(s => s.trim()).filter(Boolean),
+      genres: val("genres").split(",").map(s => s.trim()).filter(Boolean),
+    };
+    for (const [k] of EDIT_FIELDS) {
+      const v = numOrNull(k);
+      if (v !== null) patch[k] = v;
+    }
+    // identity change -> wipe enrichment server-side (fresh match next Enrich)
+    try {
+      await api(`/api/titles/${id}`, { method: "PATCH", body: patch });
+      openDrawer(id); load();
+    } catch (err) { alert(err.message); }
+  };
+  $("#eRevert").onclick = () => openDrawer(id);
 }
 $("#dBody").addEventListener("click", async e => {
+  const p = e.target.closest("[data-person]");
+  if (p) {
+    $("#drawer").classList.remove("open");
+    searchPerson(p.dataset.person);
+    return;
+  }
   const a = e.target.closest("[data-open]");
   if (!a) return;
   e.preventDefault();

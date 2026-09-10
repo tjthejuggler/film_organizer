@@ -8,7 +8,10 @@ from . import db, llm, omdb, parser, tmdb
 from .db import q, q1, tx
 
 
-def _apply(row_id: int, data: dict, source: str, status="matched"):
+def _apply(row_id: int, data: dict, source: str, status="matched", manual_edits=None):
+    """Write enrichment data. Fields listed in manual_edits (user-corrected
+    via the edit form) are NEVER overwritten — a later Enrich must not
+    revert manual fixes."""
     sets, vals = [], []
     colmap = {
         "tmdb_id": "tmdb_id", "imdb_id": "imdb_id", "title": "title",
@@ -21,8 +24,9 @@ def _apply(row_id: int, data: dict, source: str, status="matched"):
         "rating_tmdb": "rating_tmdb", "poster": "poster",
         "backdrop": "backdrop",
     }
+    locked = set(manual_edits or [])
     for k, v in data.items():
-        if k not in colmap:
+        if k not in colmap or k in locked:
             continue
         if k in ("genres", "stars"):
             v = json.dumps(v or [])
@@ -85,7 +89,9 @@ def enrich_one(row, job_log=None, force=False):
         # again: the title is almost certainly not a catalogued movie/show
         # (courses, YouTube rips, personal recordings...).
         llm_used = False
-        if best is None and llm.enabled() and title and not (row["llm_attempts"] or 0):
+        # never LLM-rewrite an identity the user locked via the edit form
+        if best is None and llm.enabled() and title and not (row["llm_attempts"] or 0) \
+                and not row["title_locked"]:
             if job_log:
                 job_log(f"LLM cleanup for: {title!r}")
             llm_used = True
@@ -168,7 +174,7 @@ def enrich_one(row, job_log=None, force=False):
         except Exception:
             pass
 
-    _apply(tid, detail, source)
+    _apply(tid, detail, source, manual_edits=json.loads(row["manual_edits"] or "[]"))
     return "matched"
 
 
@@ -207,7 +213,7 @@ def run_backfill(job_id: str):
     OMDb ratings refresh only."""
     from .jobs import log, update
 
-    rows = q("""SELECT id, tmdb_id, imdb_id, kind, cert, rating_rt FROM titles
+    rows = q("""SELECT id, tmdb_id, imdb_id, kind, cert, rating_rt, manual_edits FROM titles
                 WHERE match_status='matched' AND tmdb_id IS NOT NULL
                   AND (cert IS NULL OR (imdb_id IS NOT NULL AND rating_rt IS NULL))""")
     total = len(rows)
@@ -216,19 +222,20 @@ def run_backfill(job_id: str):
     done = 0
     for row in rows:
         sets, vals = [], []
+        locked = set(json.loads(row["manual_edits"] or "[]"))
         try:
-            if row["cert"] is None and tmdb.enabled():
+            if row["cert"] is None and "cert" not in locked and tmdb.enabled():
                 c = tmdb.cert(row["tmdb_id"], row["kind"])
                 if c:
                     sets.append("cert=?"); vals.append(c)
             if row["imdb_id"] and omdb.enabled() and row["rating_rt"] is None:
                 od = omdb.fetch(row["imdb_id"])
                 if od:
-                    if od.get("rating_rt") is not None:
+                    if od.get("rating_rt") is not None and "rating_rt" not in locked:
                         sets.append("rating_rt=?"); vals.append(od["rating_rt"])
-                    if od.get("rating_imdb") is not None:
+                    if od.get("rating_imdb") is not None and "rating_imdb" not in locked:
                         sets.append("rating_imdb=?"); vals.append(od["rating_imdb"])
-                    if od.get("votes_imdb") is not None:
+                    if od.get("votes_imdb") is not None and "votes_imdb" not in locked:
                         sets.append("votes_imdb=?"); vals.append(od["votes_imdb"])
                     if not row["cert"] and od.get("rated") and od["rated"] != "N/A":
                         sets.append("cert=?"); vals.append(od["rated"])

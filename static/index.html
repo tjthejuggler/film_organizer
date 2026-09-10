@@ -15,7 +15,7 @@
     <span id="statline" class="statline"></span>
   </div>
   <div class="controls">
-    <input id="search" type="search" placeholder="Search title, overview…" autocomplete="off">
+    <input id="search" type="search" placeholder="Search title, overview, director, actors…" autocomplete="off">
     <button id="btnScan" class="btn" title="Re-scan all enabled library roots">⟳ Scan</button>
     <button id="btnEnrich" class="btn" title="Fetch metadata for unmatched titles">✨ Enrich</button>
     <button id="btnDupes" class="btn ghost" title="Find the same title in multiple places">⧉ Duplicates</button>
@@ -36,6 +36,11 @@
   </div>
   <select id="genreSel"><option value="">Genre…</option></select>
   <select id="rootSel"><option value="">All locations</option></select>
+  <select id="wantedSel" title="Show only titles submitted as wanted (wishlist), or hide them">
+    <option value="">Wanted: all</option>
+    <option value="only">Wanted only</option>
+    <option value="hide">Hide wanted</option>
+  </select>
   <select id="matchSel" title="not-found titles are hidden by default">
     <option value="!not_found" selected>All (hide not-found)</option>
     <option value="">Really all</option>
@@ -55,7 +60,7 @@
     <tr>
       <th data-sort="title" class="sortable">Title</th>
       <th data-sort="year" class="sortable">Year</th>
-      <th class="c">Kind</th>
+      <th data-sort="runtime" class="sortable c" title="Movie runtime, or average episode length for series">Length</th>
       <th class="c">Cert.</th>
       <th data-sort="rating" class="sortable c" title="IMDb rating"><svg class="imdb" viewBox="0 0 100 32" width="34" height="14" aria-label="IMDb"><rect width="100" height="32" rx="6" fill="#F5C518"/><text x="50" y="24" text-anchor="middle" font-family="Arial, sans-serif" font-weight="bold" font-size="24" fill="#000">IMDb</text></svg></th>
       <th data-sort="rt" class="sortable c" title="Rotten Tomatoes"><span class="rt-head">🍅</span></th>

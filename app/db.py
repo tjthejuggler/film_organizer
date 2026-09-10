@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS titles(
     llm_attempts   INTEGER DEFAULT 0,
     cert           TEXT,
     rating_rt      INTEGER,
+    wanted         INTEGER DEFAULT 0,
+    wanted_note    TEXT,
+    wanted_by      TEXT,
+    favorite       INTEGER DEFAULT 0,
+    manual_edits   TEXT DEFAULT '[]',
     enriched_at    TEXT,
     cataloged_at   TEXT,
     watched_folder INTEGER DEFAULT 0,
@@ -64,9 +69,11 @@ CREATE TABLE IF NOT EXISTS titles(
     size_bytes     INTEGER DEFAULT 0,
     created_at     TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_titles_kind  ON titles(kind);
-CREATE INDEX IF NOT EXISTS idx_titles_match ON titles(match_status);
-CREATE INDEX IF NOT EXISTS idx_titles_year  ON titles(year);
+CREATE INDEX IF NOT EXISTS idx_titles_kind    ON titles(kind);
+CREATE INDEX IF NOT EXISTS idx_titles_match   ON titles(match_status);
+CREATE INDEX IF NOT EXISTS idx_titles_year    ON titles(year);
+-- idx_titles_wanted / idx_titles_fav are created in ensure() AFTER the
+-- wanted/favorite column migrations, so pre-wishlist databases migrate fine
 CREATE TABLE IF NOT EXISTS files(
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     title_id       INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
@@ -111,9 +118,24 @@ def ensure():
             con.execute("ALTER TABLE titles ADD COLUMN rating_rt INTEGER")
         if "created_at" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN created_at TEXT")
+        # wanted-list + favorites (user requests from external programs)
+        if "wanted" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN wanted INTEGER DEFAULT 0")
+        if "wanted_note" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN wanted_note TEXT")
+        if "wanted_by" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN wanted_by TEXT")
+        if "favorite" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN favorite INTEGER DEFAULT 0")
+        # per-field user-edit locks: enrich skips fields listed here
+        if "manual_edits" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN manual_edits TEXT DEFAULT '[]'")
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
         if "created" not in fcols:
             con.execute("ALTER TABLE files ADD COLUMN created REAL")
+        # indexes on migrated columns must come after the ALTERs above
+        con.execute("CREATE INDEX IF NOT EXISTS idx_titles_wanted ON titles(wanted)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_titles_fav ON titles(favorite)")
 
 
 def init():

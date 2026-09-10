@@ -103,11 +103,29 @@ svg.imdb { vertical-align: middle; border-radius: 4px; }
 .meta-col { color: var(--dim); font-size: 12.5px; max-width: 240px; }
 .where { color: var(--dim); font-size: 12px; }
 .where .loc { display: block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* action buttons get breathing room; watch/del/fav aligned right */
+td.actions { white-space: nowrap; text-align: right; }
+td.actions .wbtn { margin-left: 4px; }
 .wbtn {
   width: 30px; height: 30px; border-radius: 50%; border: 1.5px solid var(--line);
   background: transparent; color: var(--dim); cursor: pointer; font-size: 14px;
+  flex: none; transition: transform .1s ease, background .15s ease;
 }
+.wbtn:hover { transform: scale(1.12); }
 .wbtn.on { background: var(--ok); border-color: var(--ok); color: #04150a; }
+.wbtn.fav.on { background: #e91e63; border-color: #e91e63; color: #fff; }
+
+/* clickable person names (director/actor/creator) */
+.person {
+  cursor: pointer; border-bottom: 1px dotted var(--dim); color: inherit;
+}
+.person:hover { color: #7eb8ff; border-bottom-color: #7eb8ff; }
+
+/* wanted wishlist */
+.badge.wanted { color: #ffcf5c; border-color: #8a6d1f; background: rgba(255,207,92,.08); }
+tr.is-wanted .tname::after { content: " ★"; color: #ffcf5c; font-size: .8em; }
+tr.is-wanted .thumb.ph::before { content: "🔎"; }
 
 .empty { text-align: center; color: var(--dim); padding: 60px 0; }
 
@@ -166,6 +184,22 @@ svg.imdb { vertical-align: middle; border-radius: 4px; }
 .descwrap { margin: 10px 0; }
 .moverow { display: flex; align-items: center; gap: 8px; margin: 10px 0 14px; }
 .moverow .mlab { color: var(--dim); font-size: 12.5px; }
+.flagrow { display: flex; gap: 8px; margin: 8px 0 10px; flex-wrap: wrap; }
+
+/* edit-details form */
+.editbox { margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.editbox summary { cursor: pointer; color: var(--dim); font-size: 13px; user-select: none; }
+.editbox summary:hover { color: var(--text); }
+.egrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-top: 10px; }
+.egrid label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
+.egrid input, .egrid select, .egrid textarea {
+  background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 7px 9px; outline: none; font: inherit;
+}
+.egrid input:focus, .egrid textarea:focus { border-color: #3b4a6b; }
+.egrid textarea { resize: vertical; }
+.editrow { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.locked { font-size: 10px; cursor: help; }
 
 .dupgroup { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
 .duphead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }

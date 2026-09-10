@@ -30,10 +30,12 @@ async def no_stale_static(request, call_next):
     return resp
 
 
+from typing import Optional
+
 # ---- models ---------------------------------------------------------------
 class RootIn(BaseModel):
     path: str
-    label: str = None
+    label: Optional[str] = None
 
 
 class SettingsIn(BaseModel):
@@ -50,10 +52,54 @@ class WatchedIn(BaseModel):
     watched: bool
 
 
+class FlagIn(BaseModel):
+    value: bool
+
+
 class TitlePatch(BaseModel):
-    title: str = None
-    kind: str = None
-    year: int = None
+    # identity (re-keys the row; a title/kind change also wipes enrichment)
+    title: Optional[str] = None
+    kind: Optional[str] = None
+    year: Optional[int] = None
+    # detail corrections (safe edits, no enrichment reset)
+    overview: Optional[str] = None
+    director: Optional[str] = None
+    creator: Optional[str] = None
+    network: Optional[str] = None
+    status: Optional[str] = None
+    cert: Optional[str] = None
+    runtime: Optional[int] = None
+    seasons: Optional[int] = None
+    episodes: Optional[int] = None
+    rating_imdb: Optional[float] = None
+    votes_imdb: Optional[int] = None
+    rating_tmdb: Optional[float] = None
+    rating_rt: Optional[int] = None
+    stars: Optional[list] = None
+    genres: Optional[list] = None
+    clear: Optional[list] = None  # field names to NULL out (e.g. wrong rating)
+
+
+class WantedIn(BaseModel):
+    """External submission of a film/show we want but don't have yet."""
+    title: str
+    kind: str = "movie"
+    year: Optional[int] = None
+    note: Optional[str] = None
+    by: Optional[str] = None   # submitting program, shown in the UI
+    watched: bool = False
+
+
+class ExtWatchedIn(BaseModel):
+    """External 'this was watched' report (by id or by title)."""
+    title: Optional[str] = None
+    kind: str = "movie"
+    year: Optional[int] = None
+    tmdb_id: Optional[int] = None
+    imdb_id: Optional[str] = None
+    watched: bool = True
+    create_missing: bool = False  # add to wanted list when not found
+    by: Optional[str] = None
 
 
 class MoveIn(BaseModel):
@@ -63,13 +109,15 @@ class MoveIn(BaseModel):
 # ---- helpers --------------------------------------------------------------
 def _title_payload(row) -> dict:
     d = dict(row)
-    for k in ("genres", "stars"):
+    for k in ("genres", "stars", "manual_edits"):
         try:
             d[k] = json.loads(d.get(k) or "[]")
         except (json.JSONDecodeError, TypeError):
             d[k] = []
     d["watched"] = bool(d["watched_manual"]) if d["watched_manual"] is not None \
         else bool(d["watched_folder"])
+    d["wanted"] = bool(d.get("wanted"))
+    d["favorite"] = bool(d.get("favorite"))
     return d
 
 
@@ -106,12 +154,23 @@ def favicon():
 
 
 def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
-                   root=None, missing_on=None, cert=None):
+                   root=None, missing_on=None, cert=None, person=None,
+                   wanted=None):
     """Shared WHERE builder so /api/titles and /api/stats agree exactly."""
     where, params = [], []
     if q:
-        where.append("(t.title LIKE ? OR t.original_title LIKE ? OR t.overview LIKE ?)")
-        params += [f"%{q}%"] * 3
+        # free-text spans identity AND people: "nolan" finds his films
+        where.append("(t.title LIKE ? OR t.original_title LIKE ? OR t.overview LIKE ? "
+                     "OR t.director LIKE ? OR t.creator LIKE ? OR t.stars LIKE ? "
+                     "OR t.network LIKE ?)")
+        params += [f"%{q}%"] * 7
+    if person:
+        where.append("(t.director LIKE ? OR t.creator LIKE ? OR t.stars LIKE ?)")
+        params += [f"%{person}%"] * 3
+    if wanted == "only":
+        where.append("t.wanted=1")
+    elif wanted == "hide":
+        where.append("t.wanted=0")
     if kind in ("movie", "series"):
         where.append("t.kind=?")
         params.append(kind)
@@ -144,16 +203,18 @@ def list_titles(
     q: str = None, kind: str = None, watched: str = None,
     match: str = None, genre: str = None,
     root: str = None, missing_on: str = None, cert: str = None,
+    person: str = None, wanted: str = None,
     sort: str = "title", direction: str = "asc",
     limit: int = 10000, offset: int = 0,
 ):
     where, params = _filter_clause(q, kind, watched, match, genre,
-                                   root, missing_on, cert)
+                                   root, missing_on, cert, person, wanted)
 
     ORDER = {
         "title": "t.title COLLATE NOCASE", "year": "t.year",
         "rating": "COALESCE(t.rating_imdb, t.rating_tmdb)",
         "rt": "t.rating_rt",
+        "runtime": "t.runtime",
         "cataloged": "t.cataloged_at",
         "created": "COALESCE(t.created_at, t.cataloged_at)",
         "size": "t.size_bytes",
@@ -205,9 +266,54 @@ def get_title(tid: int):
     return d
 
 
+DETAIL_FIELDS = {
+    "overview": str, "director": str, "creator": str, "network": str,
+    "status": str, "cert": str, "runtime": int, "seasons": int,
+    "episodes": int, "rating_imdb": float, "votes_imdb": int,
+    "rating_tmdb": float, "rating_rt": int,
+}
+LIST_FIELDS = {"stars", "genres"}
+
+
 @app.patch("/api/titles/{tid}")
 def patch_title(tid: int, body: TitlePatch):
-    _get_title_or_404(tid)
+    row = _get_title_or_404(tid)
+    sets, vals = [], []
+    touched = []  # fields the user manually set/cleared -> enrich must skip
+
+    # ---- detail corrections: direct, surgical, keep enrichment ----------
+    for fname in DETAIL_FIELDS:
+        v = getattr(body, fname)
+        if v is not None:
+            sets.append(f"{fname}=?")
+            vals.append(v)
+            touched.append(fname)
+    for fname in LIST_FIELDS:
+        v = getattr(body, fname)
+        if v is not None:
+            sets.append(f"{fname}=?")
+            vals.append(json.dumps(v))
+            touched.append(fname)
+    cleared = []
+    for fname in (body.clear or []):
+        if fname in LIST_FIELDS:
+            sets.append(f"{fname}='[]'")
+            cleared.append(fname)
+        elif fname in DETAIL_FIELDS:
+            sets.append(f"{fname}=NULL")
+            cleared.append(fname)
+    if sets:
+        # lock every SET field so a later Enrich never reverts the fix;
+        # CLEARED fields are unlocked so enrichment refills them cleanly
+        locked = (set(json.loads(row["manual_edits"] or "[]")) - set(cleared)) \
+            | set(touched)
+        sets.append("manual_edits=?")
+        vals.append(json.dumps(sorted(locked)))
+        with db.tx() as c:
+            c.execute(f"UPDATE titles SET {', '.join(sets)} WHERE id=?", vals + [tid])
+        if not (body.title or body.kind or body.year is not None):
+            return get_title(tid)  # detail-only edit: done
+
     sets, vals = [], []
     identity_change = body.title or body.kind or body.year is not None
     if body.title:
@@ -234,12 +340,13 @@ def patch_title(tid: int, body: TitlePatch):
         key = scanner.dedupe_key(new_kind, new_title, new_year)
         sets.append("dedupe_key=?")
         vals.append(key)
-        # wipe polluted enrichment so the next Enrich starts clean
+        # wipe polluted enrichment so the next Enrich starts clean;
+        # also drop per-field edit locks — fresh identity, fresh values
         sets.append(
             "match_status='unmatched', match_error=NULL, enriched_at=NULL, "
             "data_source=NULL, tmdb_id=NULL, imdb_id=NULL, overview=NULL, "
             "rating_imdb=NULL, rating_tmdb=NULL, poster=NULL, backdrop=NULL, "
-            "stars='[]', genres='[]'"
+            "stars='[]', genres='[]', manual_edits='[]'"
         )
         sets.append("title_locked=1, kind_locked=1")
         vals.append(tid)
@@ -258,6 +365,129 @@ def set_watched(tid: int, body: WatchedIn):
             (1 if body.watched else 0, now_iso() if body.watched else None, tid),
         )
     return {"ok": True, "watched": body.watched}
+
+
+@app.post("/api/titles/{tid}/favorite")
+def set_favorite(tid: int, body: FlagIn):
+    _get_title_or_404(tid)
+    with db.tx() as c:
+        c.execute("UPDATE titles SET favorite=? WHERE id=?", (1 if body.value else 0, tid))
+    return {"ok": True, "favorite": body.value}
+
+
+@app.post("/api/titles/{tid}/wanted")
+def set_wanted(tid: int, body: FlagIn):
+    """Toggle the wanted flag on an EXISTING row (UI convenience)."""
+    _get_title_or_404(tid)
+    with db.tx() as c:
+        c.execute("UPDATE titles SET wanted=? WHERE id=?", (1 if body.value else 0, tid))
+    return {"ok": True, "wanted": body.value}
+
+
+# ---- external program API (submit wanted / report watched) -----------------
+def _find_title(body_t: str = None, kind: str = "movie", year: int = None,
+                tmdb_id: int = None, imdb_id: str = None):
+    """Locate a catalog row by external id first, then by dedupe key."""
+    if tmdb_id:
+        r = db.q1("SELECT * FROM titles WHERE tmdb_id=?", (tmdb_id,))
+        if r:
+            return r
+    if imdb_id:
+        r = db.q1("SELECT * FROM titles WHERE imdb_id=?", (imdb_id,))
+        if r:
+            return r
+    if body_t:
+        from .scanner import dedupe_key
+        return db.q1("SELECT * FROM titles WHERE dedupe_key=?",
+                     (dedupe_key(kind, body_t, year),))
+    return None
+
+
+@app.get("/api/wanted")
+def list_wanted():
+    rows = db.q("SELECT * FROM titles WHERE wanted=1 ORDER BY title COLLATE NOCASE")
+    return {"wanted": [_title_payload(r) for r in rows]}
+
+
+@app.post("/api/wanted")
+def add_wanted(body: WantedIn):
+    """Submit a film/show we want. Idempotent: re-submits update the note.
+    The row is stored WITH wanted=1 and immediately enriched (provider keys
+    permitting) so the list shows ratings, poster and runtime right away.
+    When the files later appear on disk, the scanner adopts this row
+    (same dedupe_key) and the wanted flag flips off automatically."""
+    if body.kind not in ("movie", "series"):
+        raise HTTPException(400, "kind must be 'movie' or 'series'")
+    from .scanner import dedupe_key
+    key = dedupe_key(body.kind, body.title, body.year)
+    from .jobs import now_iso
+    existing = db.q1("SELECT * FROM titles WHERE dedupe_key=?", (key,))
+    if existing:
+        with db.tx() as c:
+            c.execute("UPDATE titles SET wanted=1, "
+                      "wanted_note=COALESCE(?, wanted_note), "
+                      "wanted_by=COALESCE(?, wanted_by) WHERE id=?",
+                      (body.note, body.by, existing["id"]))
+        tid = existing["id"]
+        created = False
+    else:
+        with db.tx() as c:
+            c.execute(
+                """INSERT INTO titles(dedupe_key, kind, title, year, match_status,
+                   wanted, wanted_note, wanted_by, cataloged_at, watched_manual, watched_at)
+                   VALUES(?,?,?,?, 'unmatched', 1, ?, ?, ?, ?, ?)""",
+                (key, body.kind, body.title, body.year, body.note, body.by,
+                 now_iso(), 1 if body.watched else 0,
+                 now_iso() if body.watched else None))
+        tid = db.q1("SELECT id FROM titles WHERE dedupe_key=?", (key,))["id"]
+        created = True
+        # best-effort background enrich so the wanted row shows real data
+        try:
+            jid = jobs.create("enrich", total=1)
+            jobs.run_background(jid, lambda j: enrich.run_enrich(j, title_ids=[tid]))
+        except Exception:
+            pass  # enrichment is optional; the wanted row is already stored
+    return {"ok": True, "id": tid, "created": created}
+
+
+@app.delete("/api/wanted/{tid}")
+def remove_wanted(tid: int):
+    """Un-want. Rows WITH files keep their catalog entry (flag cleared);
+    rows WITHOUT files (pure wishlist) are deleted entirely."""
+    row = _get_title_or_404(tid)
+    has_files = db.q1("SELECT 1 FROM files WHERE title_id=? AND missing=0 LIMIT 1", (tid,))
+    with db.tx() as c:
+        if has_files:
+            c.execute("UPDATE titles SET wanted=0 WHERE id=?", (tid,))
+        else:
+            c.execute("DELETE FROM titles WHERE id=?", (tid,))
+    return {"ok": True, "removed": not bool(has_files), "title": row["title"]}
+
+
+@app.post("/api/watched")
+def ext_watched(body: ExtWatchedIn):
+    """External 'I watched this' report. Matches by tmdb/imdb id, then by
+    dedupe key (title+kind+year). Returns matched id, or 404 with the
+    would-be dedupe info; pass create_missing=true to add it to the wanted
+    list instead of failing."""
+    row = _find_title(body.title, body.kind, body.year, body.tmdb_id, body.imdb_id)
+    if row is None:
+        if body.create_missing and body.title:
+            add_wanted(WantedIn(title=body.title, kind=body.kind, year=body.year,
+                                note=f"watched report from {body.by or 'external'}",
+                                by=body.by, watched=body.watched))
+            row = _find_title(body.title, body.kind, body.year, body.tmdb_id, body.imdb_id)
+            if row:
+                return {"ok": True, "id": row["id"], "created": True,
+                        "watched": body.watched}
+        raise HTTPException(404, "title not in catalog — retry with create_missing=true to add it")
+    from .jobs import now_iso
+    with db.tx() as c:
+        c.execute(
+            "UPDATE titles SET watched_manual=?, watched_at=? WHERE id=?",
+            (1 if body.watched else 0, now_iso() if body.watched else None, row["id"]),
+        )
+    return {"ok": True, "id": row["id"], "watched": body.watched}
 
 
 @app.delete("/api/titles/{tid}")
@@ -561,11 +791,12 @@ def stats(
     q: str = None, kind: str = None, watched: str = None,
     match: str = None, genre: str = None,
     root: str = None, missing_on: str = None, cert: str = None,
+    person: str = None, wanted: str = None,
 ):
     """Counts reflect the CURRENT FILTER (same params as /api/titles),
     with a watched/unwatched breakdown of the filtered set."""
     where, params = _filter_clause(q, kind, watched, match, genre,
-                                   root, missing_on, cert)
+                                   root, missing_on, cert, person, wanted)
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     r = db.q1(
         f"""SELECT COUNT(*) n,
