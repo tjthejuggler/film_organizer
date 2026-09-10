@@ -144,6 +144,7 @@ def tv_detail(tmdb_id: int) -> dict:
     rt = d.get("episode_run_time") or []
     return {
         "tmdb_id": d.get("id"),
+        "tv_type": d.get("type"),  # 'Miniseries' | 'Scripted' | ...
         "imdb_id": (d.get("external_ids") or {}).get("imdb_id"),
         "title": d.get("name"),
         "original_title": d.get("original_name"),

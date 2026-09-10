@@ -25,6 +25,13 @@ def _apply(row_id: int, data: dict, source: str, status="matched", manual_edits=
         "backdrop": "backdrop",
     }
     locked = set(manual_edits or [])
+    # miniseries flag comes from TMDB's TV "type" field; never locked via
+    # manual_edits (it is toggled with the dedicated UI control)
+    tv_type = (data.pop("tv_type", None) or "")
+    if tv_type:
+        is_mini = 1 if "miniseries" in tv_type.lower() else 0
+        sets.append("is_miniseries=?")
+        vals.append(is_mini)
     for k, v in data.items():
         if k not in colmap or k in locked:
             continue

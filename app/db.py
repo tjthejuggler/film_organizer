@@ -102,6 +102,42 @@ CREATE TABLE IF NOT EXISTS jobs(
     finished_at TEXT,
     error       TEXT
 );
+CREATE TABLE IF NOT EXISTS recommendations(
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key     TEXT UNIQUE NOT NULL,
+    kind           TEXT NOT NULL DEFAULT 'movie',  -- movie | series (miniseries stays series + flag)
+    is_miniseries  INTEGER DEFAULT 0,
+    title          TEXT NOT NULL,
+    year           INTEGER,
+    overview       TEXT,
+    why            TEXT,          -- LLM: why THIS user might like it
+    genres         TEXT DEFAULT '[]',
+    stars          TEXT DEFAULT '[]',
+    director       TEXT,
+    creator        TEXT,
+    runtime        INTEGER,
+    seasons        INTEGER,
+    episodes       INTEGER,
+    cert           TEXT,
+    rating_imdb    REAL,
+    rating_tmdb    REAL,
+    rating_rt      INTEGER,
+    poster         TEXT,
+    backdrop       TEXT,
+    tmdb_id        INTEGER,
+    imdb_id        TEXT,
+    where_watch    TEXT,          -- LLM: where it currently streams / how to watch
+    match_status   TEXT DEFAULT 'unmatched',
+    status         TEXT DEFAULT 'pending',  -- pending | accepted | rejected
+    feedback_note  TEXT,
+    liked          INTEGER,       -- user: did they like it? (after watching/deciding)
+    seen           INTEGER DEFAULT 0,  -- user says they already saw it
+    batch_id       TEXT,
+    decided_at     TEXT,
+    title_id       INTEGER,       -- titles row created on accept / seen-reject
+    created_at     TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recs_status ON recommendations(status);
 """
 
 
@@ -139,12 +175,17 @@ def ensure():
         # of; the scanner must never prune them (see scan_roots cleanup)
         if "history" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN history INTEGER DEFAULT 0")
+        # miniseries: still a series (kind='series') but shown/tagged as
+        # miniseries and filterable via the genre dropdown
+        if "is_miniseries" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN is_miniseries INTEGER DEFAULT 0")
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
         if "created" not in fcols:
             con.execute("ALTER TABLE files ADD COLUMN created REAL")
         # indexes on migrated columns must come after the ALTERs above
         con.execute("CREATE INDEX IF NOT EXISTS idx_titles_wanted ON titles(wanted)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_titles_fav ON titles(favorite)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_titles_miniseries ON titles(is_miniseries)")
 
 
 def init():

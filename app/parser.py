@@ -18,6 +18,9 @@ VIDEO_EXTS = {
 
 WATCHED_MARKERS = {"watched", "awatched", "aawatched", "aawatchedd"}
 UNWATCHED_MARKERS = {"unwatched", "aunwatched", "aaunwatched"}
+# folder spellings that mark a title as a miniseries (kind stays 'series')
+MINISERIES_MARKERS = {"miniseries", "aminiseries", "aaminiseries",
+                      "mini-series", "limitedseries", "limited-series"}
 
 SAMPLE_RE = re.compile(r"(^|[^a-z])sample([^a-z]|$)", re.I)
 SEASON_DIR_RE = re.compile(r"^(?:s|season|series|saison)\s*\.?\s*(\d{1,2})$|^specials?$|^extras?$", re.I)
@@ -236,6 +239,20 @@ def is_pure_season_dir(name: str):
     """Return season number if the directory name is *only* a season dir."""
     m = SEASON_DIR_RE.match(name.strip())
     return int(m.group(1)) if m and m.group(1) else (0 if m else None)
+
+
+def in_miniseries_folder(path: str) -> bool:
+    """True when any ancestor folder is named 'miniseries' (any aa*/a*
+    spelling). Used to tag rows as miniseries at scan time — still a
+    series (kind='series'), just flagged."""
+    cur = os.path.abspath(path)
+    while True:
+        if norm_component(os.path.basename(cur)) in MINISERIES_MARKERS:
+            return True
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
 
 
 def tokens(text: str) -> set:

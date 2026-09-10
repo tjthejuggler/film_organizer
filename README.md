@@ -164,6 +164,34 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-10 (9)** — **recommender hardening**: the popup now has **three
+  verdict buttons** — ✓ Want it / 👁 Already seen it / ✕ Not for me — each one
+  submits and immediately serves the next pick (no separate checkbox, no
+  extra click). Titles already in the catalog can no longer be recommended:
+  a hard server-side filter drops them when a batch is stored, again when a
+  queued row's TMDB match turns out to be an owned tmdb/imdb id, and a final
+  purge runs every time the next card is served (caught live: *Severance*
+  was recommended despite being in the library).
+- **2026-09-10 (8)** — **AI film recommender + miniseries tag**: a 🎲 **Recommend**
+  button serves AI-researched movies/series one at a time in a popup — researched
+  live on the web by the LLM via z.ai MCP tool-passing (`web-search-prime` +
+  `web-reader` attached directly in the `chat/completions` `tools` array, so the
+  stored z.ai key powers both chat and tool calls; no MCP client code).
+  Each card shows poster/ratings/cast/runtime plus *why this was picked for you*
+  and where to watch; you can **✓ Want it** (→ wanted list) or **✕ Not for me**,
+  tick **"I've already seen this"** (reject+seen → seen-log row; accept+seen →
+  marked watched) and leave a free-text note explaining your verdict — every
+  decision feeds the next research batch, together with favorites, watched,
+  wanted notes and the seen log (new `app/recommender.py`, new
+  `recommendations` table). The queue refills itself in the background: when it
+  drops to ≤15, a research job brings it back to 30 (triggers on startup,
+  status checks and after each decision; `POST /api/recommendations/refill`
+  for a manual kick). API: `GET /api/recommendations/status|next`,
+  `POST /api/recommendations/{id}/decide`, `GET /api/recommendations`.
+  **Miniseries**: new *Mini-series* chip in the kind filter (series + is_miniseries
+  flag, shown as a `miniseries` badge), settable in the drawer, auto-derived
+  from TMDB's TV type on enrich and from `Miniseries`-named folders on scan;
+  "Miniseries" also appears in the genre dropdown as a filterable pseudo-genre.
 - **2026-09-10 (7)** — **Delete with memory**: the trash button now asks
   *what* to delete — files + entry, or files only (keeping the catalog entry
   as a fileless record with its watched state intact). Unwatched titles can

@@ -155,6 +155,8 @@ def scan_roots(job_id: str, roots: list):
             anchor_dir, title, year, kind = _anchor_for(path, root, pf)
             if not title:
                 title = stem
+            # a 'Miniseries' folder marks the series as a miniseries
+            mini = 1 if (kind == "series" and parser.in_miniseries_folder(path)) else 0
 
             lk = locked.get(parser.normalize_key(title))
             if lk:
@@ -186,10 +188,11 @@ def scan_roots(job_id: str, roots: list):
             if g is None:
                 g = groups[gk] = {
                     "key": gk, "title": title, "year": year, "kind": kind,
-                    "watched": watched, "size": 0,
+                    "watched": watched, "size": 0, "miniseries": mini,
                     "seasons": set(), "eps": set(), "files": [],
                 }
             g["watched"] = g["watched"] or watched
+            g["miniseries"] = g.get("miniseries", 0) or mini
             g["size"] += size
             if season is not None:
                 g["seasons"].add(season)
@@ -220,9 +223,11 @@ def scan_roots(job_id: str, roots: list):
             if row is None:
                 c.execute(
                     """INSERT INTO titles(dedupe_key, kind, title, year, cataloged_at,
-                       watched_folder, watched_at, last_seen, size_bytes, seasons, episode_count)
-                       VALUES(?,?,?,?,?,0,NULL,?,0,NULL,0)""",
-                    (g["key"], g["kind"], g["title"], g["year"], scan_started, scan_started),
+                       watched_folder, watched_at, last_seen, size_bytes, seasons,
+                       episode_count, is_miniseries)
+                       VALUES(?,?,?,?,?,0,NULL,?,0,NULL,0,?)""",
+                    (g["key"], g["kind"], g["title"], g["year"], scan_started,
+                     scan_started, g.get("miniseries", 0)),
                 )
                 tid = q1("SELECT id FROM titles WHERE dedupe_key=?", (g["key"],))["id"]
                 was = wat = None
@@ -300,10 +305,11 @@ def scan_roots(job_id: str, roots: list):
             c.execute(
                 """UPDATE titles SET last_seen=?, size_bytes=?, seasons=?,
                    episode_count=?, watched_folder=?, watched_at=?,
+                   is_miniseries=?,
                    wanted=CASE WHEN ? THEN 0 ELSE wanted END,
                    history=CASE WHEN ? THEN 0 ELSE history END WHERE id=?""",
                 (scan_started, size, n_seasons or None, n_eps, nw, new_wat,
-                 adopt, owned_again, tid),
+                 g.get("miniseries", 0), adopt, owned_again, tid),
             )
             if adopt:
                 from .jobs import log

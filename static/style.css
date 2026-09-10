@@ -298,6 +298,47 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 .testout.bad { color: var(--err); }
 .sfoot { display: flex; justify-content: flex-end; margin-top: 16px; }
 
+/* recommender */
+.btn.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+.recpill {
+  display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px;
+  border-radius: 99px; background: rgba(255,255,255,.25); font-size: 11px;
+  font-weight: 700; text-align: center; line-height: 17px; vertical-align: 1px;
+}
+.recsheet { max-width: 680px; width: 92vw; }
+.recback {
+  position: absolute; inset: 0; width: 100%; height: 110px; object-fit: cover;
+  opacity: .25; pointer-events: none; border-radius: 14px 14px 0 0;
+}
+.reccard { position: relative; }
+.recmain { display: flex; gap: 14px; margin-top: 6px; }
+.recposter {
+  width: 110px; min-width: 110px; height: 165px; object-fit: cover;
+  border-radius: 10px; border: 1px solid var(--line); background: var(--panel2);
+}
+.recposter.ph { display: flex; align-items: center; justify-content: center; font-size: 34px; }
+.recinfo { flex: 1; min-width: 0; }
+.recinfo h3 { margin: 2px 0 4px; font-size: 17px; }
+.recbadges { margin: 6px 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.recwhy {
+  margin: 8px 0; padding: 8px 10px; border-left: 3px solid var(--acc);
+  background: rgba(102,126,234,.08); border-radius: 0 8px 8px 0;
+  font-size: 13px; color: var(--text);
+}
+.recover { font-size: 13px; color: var(--dim); margin: 8px 0; }
+.recwhere { font-size: 12.5px; margin: 6px 0; }
+.recstars { font-size: 12.5px; color: var(--dim); margin: 4px 0; }
+.recfeedback { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.recseen { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 8px; }
+#recNote {
+  width: 100%; background: var(--panel2); border: 1px solid var(--line);
+  color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px;
+  font-family: inherit; resize: vertical;
+}
+.recactions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.recleft { margin-left: auto; font-size: 12px; }
+.badge.mini { border-color: #b06ad4; color: #d9aef0; }
+
 /* toast */
 .toast {
   position: fixed; bottom: 16px; right: 16px; width: 460px; max-width: 92vw;
