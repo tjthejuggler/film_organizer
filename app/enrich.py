@@ -215,17 +215,19 @@ def run_enrich(job_id: str, title_ids=None, force=False, only_unmatched=True):
 
 
 def run_backfill(job_id: str):
-    """Light pass over ALREADY-matched titles that lack cert / RT score.
-    Fills the new columns without a full re-enrich: TMDB cert lookup +
-    OMDb ratings refresh only."""
+    """Light pass over ALREADY-matched titles that lack cert / RT score or
+    the miniseries flag. Fills those columns without a full re-enrich:
+    TMDB cert + TV-type lookup, plus an OMDb ratings refresh."""
     from .jobs import log, update
 
-    rows = q("""SELECT id, tmdb_id, imdb_id, kind, cert, rating_rt, manual_edits FROM titles
+    rows = q("""SELECT id, tmdb_id, imdb_id, kind, cert, rating_rt, is_miniseries, manual_edits FROM titles
                 WHERE match_status='matched' AND tmdb_id IS NOT NULL
-                  AND (cert IS NULL OR (imdb_id IS NOT NULL AND rating_rt IS NULL))""")
+                  AND (cert IS NULL
+                       OR (kind='series' AND is_miniseries=0)
+                       OR (imdb_id IS NOT NULL AND rating_rt IS NULL))""")
     total = len(rows)
     update(job_id, total=total, message=f"Backfilling ratings for {total} title(s)")
-    log(job_id, f"Backfill started: {total} title(s) missing cert/RT")
+    log(job_id, f"Backfill started: {total} title(s) missing cert/RT/miniseries")
     done = 0
     for row in rows:
         sets, vals = [], []
@@ -235,6 +237,15 @@ def run_backfill(job_id: str):
                 c = tmdb.cert(row["tmdb_id"], row["kind"])
                 if c:
                     sets.append("cert=?"); vals.append(c)
+            # miniseries catch-up: TMDB marks limited series via its TV
+            # 'type' field; already-matched rows never got this because the
+            # default Enrich skips them (and the scanner used to overwrite
+            # the flag with the folder-marker value each scan)
+            if (row["kind"] == "series" and not row["is_miniseries"]
+                    and "is_miniseries" not in locked and tmdb.enabled()):
+                tv_type = tmdb.tv_type(row["tmdb_id"])
+                if tv_type and "miniseries" in tv_type.lower():
+                    sets.append("is_miniseries=1")
             if row["imdb_id"] and omdb.enabled() and row["rating_rt"] is None:
                 od = omdb.fetch(row["imdb_id"])
                 if od:

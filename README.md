@@ -134,6 +134,9 @@ Interactive docs at `/api/docs` (FastAPI). Key endpoints:
 | POST | `/api/wanted` | **external submit**: `{title, kind:"movie"|"series", year?, note?, by?}` — idempotent, auto-enriched; scanner clears the flag when files appear |
 | DELETE | `/api/wanted/{id}` | un-want (wishlist rows without files are removed) |
 | POST | `/api/watched` | **external watched report**: `{title?, kind?, year?, tmdb_id?|imdb_id?, watched?, create_missing?}` — 404 if unknown unless `create_missing:true` adds it to the wishlist |
+| GET  | `/api/notifications` | list notifications (`?status=pending|done|rejected|all`) + pending count |
+| GET  | `/api/notifications/count` | pending count (bell badge polling) |
+| POST | `/api/notifications/{id}/decide` | `{decision:"accept"|"reject"}` — accept moves files to the backup drive now; if the drive is offline the notification stays pending and the error names the missing drive |
 | GET  | `/api/duplicates` | duplicate groups (copies, sizes, deltas) |
 | DELETE | `/api/titles/{id}/files` | delete files (+ entry by default); `?keep_record=true` keeps the catalog entry as a fileless record |
 | DELETE | `/api/duplicates/{id}` | delete one duplicate copy `{root}` (guarded) |
@@ -164,6 +167,34 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-10 (11)** — **miniseries tags fixed** (was: only 1 of 213 series
+  tagged). Three compounding causes, all fixed: ① the ✨ Enrich button only
+  processes *unmatched* rows, so already-matched series were never asked
+  about TMDB's `type` field; ② the scanner **overwrote** `is_miniseries`
+  with the folder-marker value on every scan, erasing any tag (now it's a
+  MAX latch — folder/TMDB can set it, nothing silently clears it); ③ no
+  job ever backfilled the flag. `run_backfill` now also checks TMDB
+  `tv_type` (new [`tmdb.tv_type()`](app/tmdb.py)) for matched series, and
+  the Enrich button chains the backfill pass automatically. Result: 70
+  series correctly tagged (Band of Brothers, Baby Reindeer, Adolescence…).
+  The header was also decluttered: Duplicates moved into Settings →
+  Library roots; Scan/Enrich/Seen are icon-only.
+- **2026-09-10 (10)** — **watched→backup notifications + manual-rating fix**:
+  a 🔔 bell in the header now collects **server-persisted notifications**:
+  when a title with files on this machine gets marked watched (UI button,
+  external `/api/watched` report, or the watched-folder scan latch), a
+  pending "move to backup?" notification is queued. Opening the bell lists
+  the decisions: **✓ Move to backup** runs the move immediately; **✕ Keep
+  here** dismisses. If the backup drive (`external_root`) is unplugged the
+  accept **stays pending** and shows exactly which drive to plug in — retry
+  anytime. Notifications are deduplicated per title and a decided one is
+  never resurrected; titles already living fully on the backup drive are
+  skipped. Also fixed **manual edits being wiped**: PATCH used to treat
+  every edit-form save as an identity change (the form always sends
+  title/kind/year), resetting enrichment and the per-field edit locks —
+  so user-corrected ratings reverted on the next Enrich. Identity now only
+  counts as changed when a value actually differs. Bonus fix: `mover`'s
+  `sqlite3.Row.get()` crash that broke every Move after the first file.
 - **2026-09-10 (9)** — **recommender hardening**: the popup now has **three
   verdict buttons** — ✓ Want it / 👁 Already seen it / ✕ Not for me — each one
   submits and immediately serves the next pick (no separate checkbox, no

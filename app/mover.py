@@ -77,8 +77,9 @@ def move_title(job_id: str, title_id: int, target: str):
         moved += 1
         with tx() as c:
             # keep the file's recorded creation time across the move
+            # (sqlite3.Row has no .get — index access returns NULL safely)
             c.execute("UPDATE files SET path=?, created=COALESCE(created, ?) WHERE id=?",
-                      (dest, f.get("created"), f["id"]))
+                      (dest, f["created"], f["id"]))
         # prune now-empty source directories up to the base
         d = os.path.dirname(src)
         while os.path.abspath(d) != os.path.abspath(base):

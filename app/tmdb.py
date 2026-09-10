@@ -165,6 +165,16 @@ def tv_detail(tmdb_id: int) -> dict:
     }
 
 
+def tv_type(tmdb_id: int):
+    """TV 'type' string, e.g. 'Miniseries' | 'Scripted' | 'Talk Show'.
+    Drives the miniseries tag (a limited/one-season series)."""
+    try:
+        d = _get(f"/tv/{tmdb_id}")
+        return d.get("type") or None
+    except Exception:
+        return None
+
+
 def cert(tmdb_id: int, kind: str):
     """US content certification: PG-13 / R for movies, TV-MA / TV-PG for TV."""
     try:

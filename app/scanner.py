@@ -16,7 +16,7 @@ Grouping rules
 import os
 from datetime import datetime, timezone
 
-from . import config, db, parser
+from . import config, db, notifications, parser
 from .db import q, q1, tx
 
 CONTAINER_NAMES = {
@@ -295,6 +295,12 @@ def scan_roots(job_id: str, roots: list):
             new_wat = wat
             if nw and not was:
                 new_wat = scan_started
+                # watched via folder jumpstart during this scan -> queue the
+                # "move to backup?" decision (no user is present at scan time)
+                try:
+                    notifications.notify_watched_backup(tid)
+                except Exception:
+                    pass  # never let a notification break a scan
             # A wishlist row that just gained its first files is ADOPTED:
             # the wanted flag flips off. A manually-wanted owned title keeps
             # its flag (had_files was already true before this scan).
@@ -305,7 +311,7 @@ def scan_roots(job_id: str, roots: list):
             c.execute(
                 """UPDATE titles SET last_seen=?, size_bytes=?, seasons=?,
                    episode_count=?, watched_folder=?, watched_at=?,
-                   is_miniseries=?,
+                   is_miniseries=MAX(titles.is_miniseries, ?),
                    wanted=CASE WHEN ? THEN 0 ELSE wanted END,
                    history=CASE WHEN ? THEN 0 ELSE history END WHERE id=?""",
                 (scan_started, size, n_seasons or None, n_eps, nw, new_wat,

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, duplicates, enrich, jobs, llm, mover, recommender, scanner, tmdb, watchnext
+from . import config, db, duplicates, enrich, jobs, llm, mover, notifications, recommender, scanner, tmdb, watchnext
 
 db.init()
 
@@ -345,6 +345,16 @@ def patch_title(tid: int, body: TitlePatch):
     sets, vals = [], []
     touched = []  # fields the user manually set/cleared -> enrich must skip
 
+    # identity values are only "changed" when they actually DIFFER from the
+    # stored row. The edit form always submits title/kind/year, so comparing
+    # raw request fields treated EVERY save as a re-key, wiping enrichment
+    # AND the per-field manual_edit locks — user-corrected ratings then
+    # reverted on the next Enrich.
+    identity_change = ((body.title and body.title != row["title"])
+                       or (body.kind and body.kind != row["kind"]
+                           and body.kind in ("movie", "series"))
+                       or (body.year is not None and body.year != row["year"]))
+
     # miniseries flag: dedicated control outside the enrich-lock system
     # (a later Enrich re-derives it from TMDB's TV type for series rows)
     if body.is_miniseries is not None:
@@ -381,11 +391,10 @@ def patch_title(tid: int, body: TitlePatch):
         vals.append(json.dumps(sorted(locked)))
         with db.tx() as c:
             c.execute(f"UPDATE titles SET {', '.join(sets)} WHERE id=?", vals + [tid])
-        if not (body.title or body.kind or body.year is not None):
+        if not identity_change:
             return get_title(tid)  # detail-only edit: done
 
     sets, vals = [], []
-    identity_change = body.title or body.kind or body.year is not None
     if body.title:
         sets.append("title=?")
         vals.append(body.title)
@@ -440,6 +449,12 @@ def set_watched(tid: int, body: WatchedIn):
             (1 if body.watched else 0, now_iso() if body.watched else None,
              1 if body.watched else 0, 0 if has_files else 1, tid),
         )
+    # first watch of an owned title queues the "move to backup?" decision
+    if body.watched and has_files:
+        try:
+            notifications.notify_watched_backup(tid)
+        except Exception:
+            pass  # notifications are never allowed to break the watch toggle
     return {"ok": True, "watched": body.watched}
 
 
@@ -684,7 +699,43 @@ def ext_watched(body: ExtWatchedIn):
             "UPDATE titles SET watched_manual=?, watched_at=? WHERE id=?",
             (1 if body.watched else 0, now_iso() if body.watched else None, row["id"]),
         )
+    # programmatic watched reports (no user present) queue the backup
+    # decision for the NEXT time the web app is opened
+    if body.watched:
+        try:
+            notifications.notify_watched_backup(row["id"])
+        except Exception:
+            pass  # notifications are never allowed to break the report
     return {"ok": True, "id": row["id"], "watched": body.watched}
+
+
+# ---- notifications (watched -> backup decisions) ---------------------------
+@app.get("/api/notifications")
+def list_notifications(status: str = "pending", limit: int = 50):
+    if status not in ("pending", "done", "rejected", "failed", "all"):
+        raise HTTPException(400, "status must be pending|done|rejected|failed|all")
+    return {"notifications": notifications.list_notifications(status, limit),
+            "pending": notifications.pending_count()}
+
+
+@app.get("/api/notifications/count")
+def notification_count():
+    return {"pending": notifications.pending_count()}
+
+
+class NotificationDecisionIn(BaseModel):
+    decision: str  # 'accept' | 'reject'
+
+
+@app.post("/api/notifications/{nid}/decide")
+def decide_notification(nid: int, body: NotificationDecisionIn):
+    """Accept = move the title's files to the backup drive now; reject =
+    leave them where they are. When the backup drive is offline the
+    notification STAYS pending and the response names the missing drive."""
+    try:
+        return notifications.decide(nid, body.decision)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.delete("/api/titles/{tid}")

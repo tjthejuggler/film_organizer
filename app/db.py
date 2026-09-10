@@ -138,6 +138,16 @@ CREATE TABLE IF NOT EXISTS recommendations(
     created_at     TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_recs_status ON recommendations(status);
+CREATE TABLE IF NOT EXISTS notifications(
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title_id   INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    type       TEXT NOT NULL DEFAULT 'watched_backup',
+    status     TEXT NOT NULL DEFAULT 'pending',  -- pending | done | rejected | failed
+    message    TEXT,
+    created_at TEXT,
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
 """
 
 
