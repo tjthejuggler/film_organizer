@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Film Organizer</title>
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css?v=5">
+<link rel="stylesheet" href="/style.css?v=6">
 </head>
 <body>
 <header>
@@ -140,6 +140,25 @@
   </div>
 </div>
 
+<!-- delete-choice modal -->
+<div id="delModal" class="modal hidden">
+  <div class="sheet delsheet">
+    <div class="shead"><h2>Delete <span id="delName"></span>?</h2><button class="btn ghost" id="delClose">✕</button></div>
+    <p class="hint" id="delInfo"></p>
+    <div class="delchoices">
+      <button class="btn" id="delAll">
+        <b>🗑 Delete files + entry</b>
+        <span class="dim">removes the file(s) from disk and forgets this title completely</span>
+      </button>
+      <button class="btn" id="delKeep">
+        <b>👁 Delete files, keep record</b>
+        <span class="dim">removes the file(s) from disk but keeps the entry in the list — its watched state and details stay</span>
+      </button>
+      <button class="btn ghost" id="delCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- seen-history modal -->
 <div id="histModal" class="modal hidden">
   <div class="sheet">
@@ -200,6 +219,6 @@
   <pre id="tLog"></pre>
 </div>
 
-<script src="/app.js?v=6"></script>
+<script src="/app.js?v=7"></script>
 </body>
 </html>

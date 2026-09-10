@@ -397,10 +397,16 @@ def patch_title(tid: int, body: TitlePatch):
 def set_watched(tid: int, body: WatchedIn):
     _get_title_or_404(tid)
     from .jobs import now_iso
+    # a fileless row marked watched becomes a remembered record (history=1)
+    # so a later scan can't prune it — this is the "delete file, keep memory"
+    # promise; rows WITH files don't need it (files keep them alive)
+    has_files = db.q1("SELECT 1 FROM files WHERE title_id=? AND missing=0 LIMIT 1", (tid,))
     with db.tx() as c:
         c.execute(
-            "UPDATE titles SET watched_manual=?, watched_at=? WHERE id=?",
-            (1 if body.watched else 0, now_iso() if body.watched else None, tid),
+            "UPDATE titles SET watched_manual=?, watched_at=?, "
+            "history=CASE WHEN ? AND ? THEN 1 ELSE history END WHERE id=?",
+            (1 if body.watched else 0, now_iso() if body.watched else None,
+             1 if body.watched else 0, 0 if has_files else 1, tid),
         )
     return {"ok": True, "watched": body.watched}
 
@@ -661,19 +667,27 @@ def delete_title(tid: int):
 
 
 @app.delete("/api/titles/{tid}/files")
-def delete_title_files(tid: int):
-    """Delete a title AND its files from disk (main-list trash button).
+def delete_title_files(tid: int, keep_record: bool = False):
+    """Delete a title's files from disk (main-list trash button).
+
+    keep_record=false: the catalog entry is removed too (full delete).
+    keep_record=true:  the entry STAYS as a fileless record (history=1) —
+    this is how 'watched it, then deleted it' keeps its watched state, and
+    also how unwatched titles can be recorded as owned-but-discarded.
+
     Refuses with 409 + drive list when any source drive is offline, so the
     catalog never claims 'deleted' while bytes remain on a sleeping disk."""
     row = _get_title_or_404(tid)
+    # id needed for the keep-record path (per-row DELETE in _delete_title_files)
     files = [dict(f) for f in db.q(
-        "SELECT path, missing FROM files WHERE title_id=?", (tid,))]
+        "SELECT id, path, missing FROM files WHERE title_id=?", (tid,))]
     if not files:
         # wanted-list-only entry (or files never recorded): just drop the
         # catalog row — there is nothing on disk to touch
         with db.tx() as c:
             c.execute("DELETE FROM titles WHERE id=?", (tid,))
-        return {"ok": True, "title": row["title"], "removed_files": 0}
+        return {"ok": True, "title": row["title"], "removed_files": 0,
+                "kept_record": False}
 
     roots = [r["path"] for r in db.q("SELECT path FROM roots ORDER BY length(path) DESC")]
 
@@ -695,8 +709,15 @@ def delete_title_files(tid: int):
             409, "Connect these drives first, then retry: "
             + ", ".join(sorted(offline)))
 
-    result = duplicates._delete_title_files(files, tid, delete_row=True)
-    return {"ok": True, "title": row["title"], **result}
+    result = duplicates._delete_title_files(files, tid, delete_row=not keep_record)
+    if keep_record:
+        from .jobs import now_iso
+        with db.tx() as c:
+            c.execute(
+                "UPDATE titles SET history=1, size_bytes=0, episode_count=0, "
+                "seasons=NULL, last_seen=? WHERE id=?",
+                (now_iso(), tid))
+    return {"ok": True, "title": row["title"], "kept_record": keep_record, **result}
 
 
 @app.get("/api/titles/{tid}/files/{fid}/open")

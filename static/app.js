@@ -274,27 +274,7 @@ document.addEventListener("click", async e => {
     e.stopPropagation();
     const id = del.dataset.deltitle;
     const t = state.titles.find(x => String(x.id) === String(id));
-    const gb = (t.size_bytes / 1e9).toFixed(1);
-    const hasFiles = (t.locations || []).length > 0 || !!t.size_bytes;
-    // typed confirmation: user must type DELETE
-    if (!confirm(hasFiles
-      ? `Delete "${t.title}"?\n\n` +
-        `This removes its file(s) from disk (${gb} GB) and its catalog entry. ` +
-        `This cannot be undone.\n\nAre you sure?`
-      : `Remove "${t.title}" from the list?\n\n` +
-        `No file is on disk for this entry — only the list entry will be removed.\n\n` +
-        `Are you sure?`)) return;
-    del.disabled = true;
-    try {
-      const r = await api(`/api/titles/${id}/files`, { method: "DELETE" });
-      alert(r.removed_files > 0
-        ? `Deleted "${r.title}": ${r.removed_files} file(s) removed from disk.`
-        : `Removed "${r.title}" from the list (no files on disk).`);
-      load();
-    } catch (err) {
-      del.disabled = false;
-      alert(err.message); // includes "Connect these drives first: …" on 409
-    }
+    openDeleteChoice(t);
     return;
   }
   const fav = e.target.closest("[data-fav]");
@@ -318,6 +298,62 @@ document.addEventListener("click", async e => {
   const tr = e.target.closest("tr[data-id]");
   if (tr) openDrawer(+tr.dataset.id);
 });
+
+/* ---------- delete-choice popup ---------- */
+let delTarget = null;
+
+function openDeleteChoice(t) {
+  delTarget = t;
+  $("#delName").textContent = `"${t.title}"`;
+  const gb = (t.size_bytes / 1e9).toFixed(1);
+  const hasFiles = (t.locations || []).length > 0 || !!t.size_bytes;
+  const info = $("#delInfo");
+  if (!hasFiles) {
+    info.innerHTML = `No file is on disk for this entry — this removes only
+      the list entry (its watched memory goes with it).`;
+    $("#delKeep").classList.add("hidden");
+  } else {
+    info.innerHTML = `This ${t.kind} currently uses <b>${gb} GB</b> on disk
+      ${t.watched ? "and is marked <b>watched</b>" : ""}.
+      What should happen to its file(s)?`;
+    $("#delKeep").classList.remove("hidden");
+  }
+  $("#delModal").classList.remove("hidden");
+}
+
+function closeDeleteChoice() {
+  delTarget = null;
+  $("#delModal").classList.add("hidden");
+}
+
+async function runDelete(keepRecord) {
+  const t = delTarget;
+  if (!t) return;
+  closeDeleteChoice();
+  try {
+    const q = keepRecord ? "?keep_record=true" : "";
+    const r = await api(`/api/titles/${t.id}/files${q}`, { method: "DELETE" });
+    if (r.kept_record) {
+      alert(`Deleted the file(s) of "${r.title}" (${r.removed_files} removed).
+The entry stays in your list as a record.`);
+    } else {
+      alert(r.removed_files > 0
+        ? `Deleted "${r.title}": ${r.removed_files} file(s) removed from disk.`
+        : `Removed "${r.title}" from the list (no files on disk).`);
+    }
+    load();
+  } catch (err) {
+    alert(err.message); // includes "Connect these drives first: …" on 409
+  }
+}
+
+$("#delClose").onclick = closeDeleteChoice;
+$("#delCancel").onclick = closeDeleteChoice;
+$("#delModal").addEventListener("click", e => {
+  if (e.target === $("#delModal")) closeDeleteChoice();
+});
+$("#delAll").onclick = () => runDelete(false);
+$("#delKeep").onclick = () => runDelete(true);
 
 /* ---------- drawer ---------- */
 const EDIT_FIELDS = [

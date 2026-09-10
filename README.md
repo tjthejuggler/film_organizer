@@ -63,6 +63,13 @@ release names when normal TMDB matching fails. Use the **Test TMDB** /
   normal library row — still marked watched. External programs can use
   `POST /api/history` (accepts `tmdb_id`) / `GET /api/history` /
   `DELETE /api/history/{id}`.
+- **Delete with memory** — the row trash button opens a **choice popup**:
+  *Delete files + entry* (the old behavior) or *Delete files, keep record*.
+  Keeping the record turns the entry into a fileless one that keeps its
+  watched state, metadata and history badge — "watched it, deleted it, still
+  remember it". Unwatched titles can be kept as records too (e.g. discarded
+  downloads). Marking a fileless entry watched (✓) automatically turns it
+  into a remembered record; rows WITH files don't need the flag.
 - **Watch Next** — pin one movie and one series as "queued to watch" with the
   ▶ button (row or drawer). The title is **copied** into
   `<internal folder>/aaNext_Movie` or `aaNext_Series` (whatever the previous
@@ -128,6 +135,7 @@ Interactive docs at `/api/docs` (FastAPI). Key endpoints:
 | DELETE | `/api/wanted/{id}` | un-want (wishlist rows without files are removed) |
 | POST | `/api/watched` | **external watched report**: `{title?, kind?, year?, tmdb_id?|imdb_id?, watched?, create_missing?}` — 404 if unknown unless `create_missing:true` adds it to the wishlist |
 | GET  | `/api/duplicates` | duplicate groups (copies, sizes, deltas) |
+| DELETE | `/api/titles/{id}/files` | delete files (+ entry by default); `?keep_record=true` keeps the catalog entry as a fileless record |
 | DELETE | `/api/duplicates/{id}` | delete one duplicate copy `{root}` (guarded) |
 | POST | `/api/test/llm` · `/api/test/tmdb` | probe provider keys |
 | GET/POST/DELETE | `/api/roots` | manage library roots |
@@ -156,6 +164,11 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-10 (7)** — **Delete with memory**: the trash button now asks
+  *what* to delete — files + entry, or files only (keeping the catalog entry
+  as a fileless record with its watched state intact). Unwatched titles can
+  be kept as records too. Marking a fileless entry watched auto-remembers it
+  (`history=1`), so scans never prune it.
 - **2026-09-10 (6)** — **Seen log confirm flow + UI tweaks**: adding a seen
   entry now checks the local catalog first, then shows TMDB candidate cards
   (poster/year/synopsis) to confirm the exact title; the chosen candidate's
