@@ -272,15 +272,21 @@ document.addEventListener("click", async e => {
     const id = del.dataset.deltitle;
     const t = state.titles.find(x => String(x.id) === String(id));
     const gb = (t.size_bytes / 1e9).toFixed(1);
+    const hasFiles = (t.locations || []).length > 0 || !!t.size_bytes;
     // typed confirmation: user must type DELETE
-    if (!confirm(
-      `Delete "${t.title}"?\n\n` +
-      `This removes its file(s) from disk (${gb} GB) and its catalog entry. ` +
-      `This cannot be undone.\n\nAre you sure?`)) return;
+    if (!confirm(hasFiles
+      ? `Delete "${t.title}"?\n\n` +
+        `This removes its file(s) from disk (${gb} GB) and its catalog entry. ` +
+        `This cannot be undone.\n\nAre you sure?`
+      : `Remove "${t.title}" from the list?\n\n` +
+        `No file is on disk for this entry — only the list entry will be removed.\n\n` +
+        `Are you sure?`)) return;
     del.disabled = true;
     try {
       const r = await api(`/api/titles/${id}/files`, { method: "DELETE" });
-      alert(`Deleted "${r.title}": ${r.removed_files} file(s) removed from disk.`);
+      alert(r.removed_files > 0
+        ? `Deleted "${r.title}": ${r.removed_files} file(s) removed from disk.`
+        : `Removed "${r.title}" from the list (no files on disk).`);
       load();
     } catch (err) {
       del.disabled = false;

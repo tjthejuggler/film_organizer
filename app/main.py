@@ -525,7 +525,11 @@ def delete_title_files(tid: int):
     files = [dict(f) for f in db.q(
         "SELECT path, missing FROM files WHERE title_id=?", (tid,))]
     if not files:
-        raise HTTPException(404, "no files recorded for this title")
+        # wanted-list-only entry (or files never recorded): just drop the
+        # catalog row — there is nothing on disk to touch
+        with db.tx() as c:
+            c.execute("DELETE FROM titles WHERE id=?", (tid,))
+        return {"ok": True, "title": row["title"], "removed_files": 0}
 
     roots = [r["path"] for r in db.q("SELECT path FROM roots ORDER BY length(path) DESC")]
 
