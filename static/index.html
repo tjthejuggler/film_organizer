@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Film Organizer</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="3" fill="#e50914"/><path d="M10 9l6 3-6 3V9z" fill="#fff"/></svg>
+    <h1>Film Organizer</h1>
+    <span id="statline" class="statline"></span>
+  </div>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search title, overview…" autocomplete="off">
+    <button id="btnScan" class="btn" title="Re-scan all enabled library roots">⟳ Scan</button>
+    <button id="btnEnrich" class="btn" title="Fetch metadata for unmatched titles">✨ Enrich</button>
+    <button id="btnDupes" class="btn ghost" title="Find the same title in multiple places">⧉ Duplicates</button>
+    <button id="btnSettings" class="btn ghost" title="API keys, library roots, storage folders">⚙ Settings</button>
+  </div>
+</header>
+
+<nav id="filters">
+  <div class="chips" id="kindChips">
+    <button class="chip on" data-kind="">All</button>
+    <button class="chip" data-kind="movie">Movies</button>
+    <button class="chip" data-kind="series">Series</button>
+  </div>
+  <div class="chips" id="watchChips">
+    <button class="chip on" data-w="">Any</button>
+    <button class="chip" data-w="watched">Watched</button>
+    <button class="chip" data-w="unwatched">Unwatched</button>
+  </div>
+  <select id="genreSel"><option value="">Genre…</option></select>
+  <select id="rootSel"><option value="">All locations</option></select>
+  <select id="matchSel" title="not-found titles are hidden by default">
+    <option value="!not_found" selected>All (hide not-found)</option>
+    <option value="">Really all</option>
+    <option value="matched">Matched</option>
+    <option value="unmatched">Unmatched</option>
+    <option value="not_found">Not found (not a movie/show)</option>
+    <option value="error">Error</option>
+    <option value="no_provider">No provider key</option>
+  </select>
+  <span class="spacer"></span>
+  <label class="mini"><input type="checkbox" id="onlyMissing"> has missing files</label>
+</nav>
+
+<main>
+<table id="tbl">
+  <thead>
+    <tr>
+      <th data-sort="title" class="sortable">Title</th>
+      <th data-sort="year" class="sortable">Year</th>
+      <th class="c">Kind</th>
+      <th class="c">Cert.</th>
+      <th data-sort="rating" class="sortable c" title="IMDb rating"><svg class="imdb" viewBox="0 0 100 32" width="34" height="14" aria-label="IMDb"><rect width="100" height="32" rx="6" fill="#F5C518"/><text x="50" y="24" text-anchor="middle" font-family="Arial, sans-serif" font-weight="bold" font-size="24" fill="#000">IMDb</text></svg></th>
+      <th data-sort="rt" class="sortable c" title="Rotten Tomatoes"><span class="rt-head">🍅</span></th>
+      <th class="meta-col">Cast / Creators</th>
+      <th class="meta-col">Where</th>
+      <th data-sort="size" class="sortable r">Size</th>
+      <th data-sort="created" class="sortable" title="Creation date of the video file or its containing folder on disk">Created</th>
+      <th data-sort="watched" class="sortable c">✓</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty hidden">No titles match. Try a <b>Scan</b>, or add API keys in <b>Settings</b> and run <b>Enrich</b>.</div>
+</main>
+
+<!-- detail drawer -->
+<aside id="drawer">
+  <div class="dhead">
+    <button class="btn ghost" id="dClose">✕</button>
+  </div>
+  <div id="dBody"></div>
+</aside>
+
+<!-- settings modal -->
+<div id="modal" class="modal hidden">
+  <div class="sheet">
+    <div class="shead"><h2>Settings</h2><button class="btn ghost" id="mClose">✕</button></div>
+
+    <section>
+      <h3>API keys & providers</h3>
+      <p class="hint">TMDB provides posters, cast, creators, ratings. OMDb (optional) adds IMDb ratings. The LLM (z.ai) cleans up messy folder names when normal matching fails — just paste your z.ai key, base URL and model are prefilled.</p>
+      <div class="grid">
+        <label>TMDB API key (v3)<input id="s_tmdb_api_key" placeholder="e.g. 8f4a…"></label>
+        <label>OMDb API key (optional)<input id="s_omdb_api_key" placeholder="free at omdbapi.com"></label>
+        <label>LLM base URL (z.ai)<input id="s_llm_base_url" placeholder="https://api.z.ai/api/paas/v4"></label>
+        <label>LLM API key (z.ai)<input id="s_llm_api_key" type="password" placeholder="paste your z.ai API key"></label>
+        <label>LLM model<input id="s_llm_model" placeholder="glm-5.3-flash"></label>
+        <label>Internal folder (this computer)
+          <div class="inputrow">
+            <input id="s_internal_root" placeholder="/home/you/Videos">
+            <button class="btn mini" data-browse="s_internal_root" title="Browse…">📁</button>
+          </div>
+        </label>
+        <label>External folder (drive)
+          <div class="inputrow">
+            <input id="s_external_root" placeholder="/mnt/external_drive/Movies">
+            <button class="btn mini" data-browse="s_external_root" title="Browse…">📁</button>
+          </div>
+        </label>
+      </div>
+      <div class="testrow">
+        <button class="btn mini" id="btnTestTmdb">Test TMDB</button>
+        <button class="btn mini" id="btnTestLlm">Test LLM</button>
+        <span id="testOut" class="testout"></span>
+      </div>
+    </section>
+
+    <section>
+      <h3>Library roots</h3>
+      <p class="hint">Folders to catalog — laptop paths now, external drives later. Drives that are unplugged are kept and shown as offline.</p>
+      <ul id="rootList" class="roots"></ul>
+      <div class="addroot">
+        <input id="newRoot" placeholder="/mnt/external_drive/Movies">
+        <button class="btn mini" data-browse="newRoot" title="Browse…">📁</button>
+        <button class="btn" id="addRoot">Add root</button>
+      </div>
+    </section>
+
+    <div class="sfoot">
+      <button class="btn primary" id="mSave">Save settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- duplicates modal -->
+<div id="dupModal" class="modal hidden">
+  <div class="sheet">
+    <div class="shead">
+      <h2>Duplicate copies</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn mini" id="btnBulk" title="Delete copies in bulk: decide once per location combination">🧹 Bulk delete</button>
+        <button class="btn ghost" id="dClose2">✕</button>
+      </div>
+    </div>
+    <p class="hint">The same title found in more than one place (e.g. laptop and an external drive), or cataloged twice as two rows. Keep the bigger copy for best quality — the size difference is shown. Deleting a copy removes its files from disk and updates the catalog. The server refuses any deletion that would leave you with no copy at all.</p>
+    <div id="dupList"></div>
+  </div>
+</div>
+
+<!-- folder picker modal -->
+<div id="fpModal" class="modal hidden">
+  <div class="sheet">
+    <div class="shead"><h2>Choose folder</h2><button class="btn ghost" id="fpClose">✕</button></div>
+    <div class="fpbar">
+      <button class="btn mini" id="fpUp">⬆ Up</button>
+      <input id="fpPath" readonly>
+    </div>
+    <div class="fpshort" id="fpShortcuts"></div>
+    <div id="fpDirs" class="fpdirs"></div>
+    <div class="sfoot">
+      <button class="btn primary" id="fpSelect">Select this folder</button>
+    </div>
+  </div>
+</div>
+
+<!-- job toast -->
+<div id="toast" class="toast hidden">
+  <div class="tbar"><span id="tTitle">Job</span><button class="btn ghost" id="tClose">✕</button></div>
+  <div class="pbar"><div id="tFill"></div></div>
+  <pre id="tLog"></pre>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

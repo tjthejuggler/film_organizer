@@ -1,0 +1,630 @@
+/* Film Organizer frontend */
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+
+const state = {
+  q: "", kind: "", watched: "", genre: "", root: "", match: "!not_found", missing: false,
+  sort: "title", dir: "asc",
+  titles: [], genres: [],
+};
+
+function fmtSize(b) {
+  if (!b) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0; let n = b;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(n >= 100 || i === 0 ? 0 : 1)} ${u[i]}`;
+}
+function fmtDate(s) {
+  if (!s) return "—";
+  return s.slice(0, 10);
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    "&" + { "&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "#39" }[c] + ";");
+}
+
+async function api(path, opts = {}) {
+  const init = { method: opts.method || "GET", ...opts };
+  if (opts.body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(opts.body);
+  } else {
+    delete init.body; // no body -> no JSON content-type (avoids 422 on DELETE)
+  }
+  const r = await fetch(path, init);
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { msg = (await r.json()).detail || msg; } catch (e) { /* ignore */ }
+    throw new Error(msg);
+  }
+  return r.status === 204 ? null : r.json();
+}
+
+/* ---------- table ---------- */
+async function load() {
+  const p = new URLSearchParams();
+  if (state.q) p.set("q", state.q);
+  if (state.kind) p.set("kind", state.kind);
+  if (state.watched) p.set("watched", state.watched);
+  if (state.genre) p.set("genre", state.genre);
+  if (state.root) p.set("root", state.root);
+  if (state.match) p.set("match", state.match);
+  if (state.missing) p.set("missing_on", "1");
+  p.set("sort", state.sort); p.set("direction", state.dir);
+  // stats use the SAME filter params (minus sort) so the top bar reflects
+  // everything that made it through the current filter
+  const ps = new URLSearchParams(p);
+  ps.delete("sort"); ps.delete("direction");
+  const [data, st] = await Promise.all([
+    api(`/api/titles?${p}`), api(`/api/stats?${ps}`),
+  ]);
+  state.titles = data.titles;
+  renderGenres(data.genres);
+  renderRows();
+  $("#statline").textContent =
+    `Through filter: ${st.n} titles · ${st.movies} movies · ${st.series} series · ` +
+    `${st.watched} watched · ${st.unwatched} unwatched · ${fmtSize(st.bytes)}`;
+}
+
+function renderGenres(genres) {
+  const sel = $("#genreSel");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Genre…</option>' +
+    genres.map(g => `<option${g === cur ? " selected" : ""}>${esc(g)}</option>`).join("");
+}
+
+async function renderRootOptions() {
+  const { roots } = await api("/api/roots");
+  $("#rootSel").innerHTML = '<option value="">All locations</option>' +
+    roots.map(r => `<option value="${esc(r.path)}">${esc(r.label || r.path)}${r.exists ? "" : " (offline)"}</option>`).join("");
+  $("#rootSel").value = state.root;
+}
+
+function locBadge(path) {
+  return path.replace(/^\/home\/[^/]+/, "~").replace(/\/$/, "");
+}
+
+function renderRows() {
+  const tb = $("#rows");
+  $("#empty").classList.toggle("hidden", state.titles.length > 0);
+  tb.innerHTML = state.titles.map(t => {
+    const rating = t.rating_imdb || t.rating_tmdb;
+    const stars = (t.stars || []).slice(0, 3).join(", ");
+    const who = t.kind === "series"
+      ? (t.creator ? `Created by ${esc(t.creator)}` : "")
+      : (t.director ? `Dir. ${esc(t.director)}` : "");
+    const metas = [];
+    if (t.kind === "series" && t.seasons) metas.push(`${t.seasons} season${t.seasons > 1 ? "s" : ""}`);
+    if (t.episode_count) metas.push(`${t.episode_count} ep file${t.episode_count > 1 ? "s" : ""}`);
+    if (t.missing_files) metas.push(`${t.missing_files} missing`);
+    const matchBadge = t.match_status === "matched" ? ""
+      : t.match_status === "no_provider" ? '<span class="badge warn">no key</span>'
+      : t.match_status === "error" ? `<span class="badge err" title="${esc(t.match_error)}">error</span>`
+      : t.match_status === "not_found" ? `<span class="badge dim2" title="${esc(t.match_error)}">not a movie/show</span>`
+      : '<span class="badge">unmatched</span>';
+    const watched = t.watched;
+    const genreTags = (t.genres || []).slice(0, 3).map(g =>
+      `<span class="badge genre">${esc(g)}</span>`).join("");
+    return `<tr data-id="${t.id}" class="${watched ? "watched" : ""}">
+      <td><div class="tcell">
+        ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
+                   : `<div class="thumb ph">🎬</div>`}
+        <div>
+          <div class="tname">${esc(t.title)}</div>
+          <div class="tsub" title="${esc(t.overview || "")}">${esc(t.overview || "")}</div>
+          <div style="margin-top:3px">
+            <span class="badge ${t.kind}">${t.kind}</span>${matchBadge}
+            ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
+            ${genreTags}
+          </div>
+        </div>
+      </div></td>
+      <td>${t.year || "—"}</td>
+      <td class="c">${t.kind === "series" ? "📺" : "🎞️"}</td>
+      <td class="c">${t.cert ? `<span class="cert">${esc(t.cert)}</span>` : "—"}</td>
+      <td class="c">${rating ? `<span class="rating">★ ${rating.toFixed(1)}</span>` : "—"}</td>
+      <td class="c">${t.rating_rt != null ? `<span class="rt ${t.rating_rt >= 60 ? "fresh" : "rotten"}">${t.rating_rt}%</span>` : "—"}</td>
+      <td class="meta-col">${esc(stars)}${stars && who ? "<br>" : ""}${who}</td>
+      <td class="where">${(t.locations || []).map(l =>
+        `<span class="loc" title="${esc(l)}">${esc(locBadge(l))}</span>`).join("")}</td>
+      <td class="r">${fmtSize(t.size_bytes)}</td>
+      <td title="${t.created_at ? "created" : "created unknown — showing catalog date (files on offline drive)"}">${fmtDate(t.created_at || t.cataloged_at)}</td>
+      <td class="c">
+        <button class="wbtn ${watched ? "on" : ""}" data-watched="${t.id}"
+          title="${watched ? "Mark unwatched" : "Mark watched"}">✓</button>
+        <button class="wbtn del" data-deltitle="${t.id}" data-name="${esc(t.title)}"
+          title="Delete this ${t.kind} and its files from disk">🗑</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+/* ---------- sorting / filtering ---------- */
+$$("th.sortable").forEach(th => th.addEventListener("click", () => {
+  const k = th.dataset.sort;
+  if (state.sort === k) state.dir = state.dir === "asc" ? "desc" : "asc";
+  else { state.sort = k; state.dir = "asc"; }
+  $$("th.sortable").forEach(t => t.classList.remove("sorted-asc", "sorted-desc"));
+  th.classList.add(state.dir === "asc" ? "sorted-asc" : "sorted-desc");
+  load();
+}));
+
+let searchTimer;
+$("#search").addEventListener("input", e => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { state.q = e.target.value.trim(); load(); }, 250);
+});
+$$("#kindChips .chip").forEach(c => c.addEventListener("click", () => {
+  $$("#kindChips .chip").forEach(x => x.classList.remove("on")); c.classList.add("on");
+  state.kind = c.dataset.kind; load();
+}));
+$$("#watchChips .chip").forEach(c => c.addEventListener("click", () => {
+  $$("#watchChips .chip").forEach(x => x.classList.remove("on")); c.classList.add("on");
+  state.watched = c.dataset.w; load();
+}));
+$("#genreSel").addEventListener("change", e => { state.genre = e.target.value; load(); });
+$("#rootSel").addEventListener("change", e => { state.root = e.target.value; load(); });
+$("#matchSel").addEventListener("change", e => { state.match = e.target.value; load(); });
+$("#onlyMissing").addEventListener("change", e => { state.missing = e.target.checked; load(); });
+
+/* ---------- watched toggle + delete + row click (delegation) ---------- */
+document.addEventListener("click", async e => {
+  const wbtn = e.target.closest("[data-watched]");
+  if (wbtn) {
+    e.stopPropagation();
+    const id = wbtn.dataset.watched;
+    const t = state.titles.find(x => String(x.id) === String(id));
+    const next = !t.watched;
+    try {
+      await api(`/api/titles/${id}/watched`, { method: "POST", body: { watched: next } });
+      t.watched = next;
+      renderRows();
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const del = e.target.closest("[data-deltitle]");
+  if (del) {
+    e.stopPropagation();
+    const id = del.dataset.deltitle;
+    const t = state.titles.find(x => String(x.id) === String(id));
+    const gb = (t.size_bytes / 1e9).toFixed(1);
+    // typed confirmation: user must type DELETE
+    if (!confirm(
+      `Delete "${t.title}"?\n\n` +
+      `This removes its file(s) from disk (${gb} GB) and its catalog entry. ` +
+      `This cannot be undone.\n\nAre you sure?`)) return;
+    del.disabled = true;
+    try {
+      const r = await api(`/api/titles/${id}/files`, { method: "DELETE" });
+      alert(`Deleted "${r.title}": ${r.removed_files} file(s) removed from disk.`);
+      load();
+    } catch (err) {
+      del.disabled = false;
+      alert(err.message); // includes "Connect these drives first: …" on 409
+    }
+    return;
+  }
+  const tr = e.target.closest("tr[data-id]");
+  if (tr) openDrawer(+tr.dataset.id);
+});
+
+/* ---------- drawer ---------- */
+async function openDrawer(id) {
+  const t = await api(`/api/titles/${id}`);
+  const facts = [
+    t.year && `Year ${t.year}`,
+    t.runtime && `${t.runtime} min`,
+    t.status,
+    t.network && `Network: ${t.network}`,
+    t.tmdb_id && `TMDB ${t.tmdb_id}`,
+    t.imdb_id && `IMDb ${t.imdb_id}`,
+    t.data_source,
+  ].filter(Boolean).join(" · ");
+  const descText = t.overview || "No description fetched yet — run Enrich.";
+  $("#dBody").innerHTML = `
+    ${t.backdrop ? `<img class="back" src="${esc(t.backdrop)}">` : ""}
+    <h2>${esc(t.title)} ${t.year ? `<span style="color:var(--dim)">(${t.year})</span>` : ""}</h2>
+    <div class="facts">${esc(facts)}</div>
+    ${(t.genres || []).map(g => `<span class="badge genre">${esc(g)}</span>`).join(" ")}
+    ${t.cert ? `<span class="cert" title="Content rating">${esc(t.cert)}</span>` : ""}
+    ${t.rating_rt != null ? `<span class="rt ${t.rating_rt >= 60 ? "fresh" : "rotten"}" title="Rotten Tomatoes">🍅 ${t.rating_rt}%</span>` : ""}
+    <div class="descwrap">
+      <button class="btn mini" id="dDescBtn">Show description</button>
+      <p class="overview hidden" id="dDesc">${esc(descText)}</p>
+    </div>
+    <div class="moverow">
+      <span class="mlab">Move to:</span>
+      <button class="btn mini" id="dMoveInt" title="Move files to the internal folder configured in Settings">💻 Internal</button>
+      <button class="btn mini" id="dMoveExt" title="Move files to the external drive configured in Settings">🔌 External</button>
+    </div>
+    <dl>
+      ${t.rating_imdb ? `<dt>IMDb</dt><dd>★ ${t.rating_imdb} (${(t.votes_imdb || 0).toLocaleString()} votes)</dd>` : ""}
+      ${t.rating_tmdb ? `<dt>TMDB</dt><dd>★ ${t.rating_tmdb}</dd>` : ""}
+      ${t.director ? `<dt>Director</dt><dd>${esc(t.director)}</dd>` : ""}
+      ${t.creator ? `<dt>Created by</dt><dd>${esc(t.creator)}</dd>` : ""}
+      ${(t.stars || []).length ? `<dt>Stars</dt><dd>${esc(t.stars.join(", "))}</dd>` : ""}
+      <dt>Created on disk</dt><dd>${fmtDate(t.created_at)}</dd>
+      <dt>Cataloged</dt><dd>${fmtDate(t.cataloged_at)}</dd>
+      <dt>Watched</dt><dd>${t.watched ? "yes" : "no"}
+        <button class="btn mini" id="dWatch" style="margin-left:8px">${t.watched ? "Mark unwatched" : "Mark watched"}</button></dd>
+    </dl>
+    <h3 style="margin-bottom:6px">Files on disk</h3>
+    <div class="filelist">
+      ${t.files.map(f => `
+        <div class="f ${f.missing ? "missing" : ""}">
+          <span class="path" title="${esc(f.path)}">${esc(f.path)}${f.missing ? " (missing)" : ""}</span>
+          <span>${fmtSize(f.size_bytes)}</span>
+          ${f.missing ? "" : `<a href="#" data-open="${t.id}:${f.id}">open folder</a>`}
+        </div>`).join("")}
+    </div>`;
+  $("#drawer").classList.add("open");
+
+  // description toggle (hidden by default)
+  $("#dDescBtn").onclick = () => {
+    const p = $("#dDesc");
+    const show = p.classList.toggle("hidden") === false;
+    $("#dDescBtn").textContent = show ? "Hide description" : "Show description";
+  };
+  $("#dWatch").onclick = async () => {
+    await api(`/api/titles/${id}/watched`, { method: "POST", body: { watched: !t.watched } });
+    openDrawer(id); load();
+  };
+  const doMove = async target => {
+    const label = target === "internal" ? "internal" : "external";
+    if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to the ${label} folder?`)) return;
+    try {
+      const r = await api(`/api/titles/${id}/move`, { method: "POST", body: { target } });
+      watchJob(r.job_id, `Move → ${label}`);
+    } catch (err) { alert(err.message); }
+  };
+  $("#dMoveInt").onclick = () => doMove("internal");
+  $("#dMoveExt").onclick = () => doMove("external");
+}
+$("#dBody").addEventListener("click", async e => {
+  const a = e.target.closest("[data-open]");
+  if (!a) return;
+  e.preventDefault();
+  const parts = a.dataset.open.split(":");
+  try { await api(`/api/titles/${parts[0]}/files/${parts[1]}/open`); }
+  catch (err) { alert(err.message); }
+});
+$("#dClose").onclick = () => $("#drawer").classList.remove("open");
+
+/* ---------- settings ---------- */
+async function openSettings() {
+  const s = await api("/api/settings");
+  $("#s_tmdb_api_key").value = s.tmdb_api_key_set ? s.tmdb_api_key : "";
+  $("#s_omdb_api_key").value = s.omdb_api_key_set ? s.omdb_api_key : "";
+  $("#s_llm_api_key").value = s.llm_api_key_set ? s.llm_api_key : "";
+  $("#s_llm_base_url").value = s.llm_base_url || "";
+  $("#s_llm_model").value = s.llm_model || "";
+  $("#s_internal_root").value = s.internal_root || "";
+  $("#s_external_root").value = s.external_root || "";
+  const { roots } = await api("/api/roots");
+  $("#rootList").innerHTML = roots.map(r => `
+    <li>
+      <span class="path" title="${esc(r.path)}">${esc(r.path)}</span>
+      ${r.exists ? "" : '<span class="off">offline</span>'}
+      <span class="st">${(r.stats && r.stats.titles) || 0} titles</span>
+      <button class="btn mini" data-toggle-root="${r.id}">${r.enabled ? "enabled" : "disabled"}</button>
+      <button class="btn mini ghost" data-del-root="${r.id}">✕</button>
+    </li>`).join("");
+  $("#modal").classList.remove("hidden");
+}
+$("#btnSettings").onclick = openSettings;
+$("#mClose").onclick = () => $("#modal").classList.add("hidden");
+$("#modal").addEventListener("click", e => {
+  if (e.target === $("#modal")) $("#modal").classList.add("hidden");
+});
+async function saveSettings() {
+  await api("/api/settings", { method: "POST", body: { values: {
+    tmdb_api_key: $("#s_tmdb_api_key").value.trim(),
+    omdb_api_key: $("#s_omdb_api_key").value.trim(),
+    llm_api_key: $("#s_llm_api_key").value.trim(),
+    llm_base_url: $("#s_llm_base_url").value.trim(),
+    llm_model: $("#s_llm_model").value.trim(),
+    internal_root: $("#s_internal_root").value.trim(),
+    external_root: $("#s_external_root").value.trim(),
+  } } });
+}
+async function testProvider(kind) {
+  const out = $("#testOut");
+  out.className = "testout";
+  out.textContent = "testing…";
+  try {
+    await saveSettings(); // persist first so the probe uses what you typed
+    const r = await api(`/api/test/${kind}`, { method: "POST" });
+    out.className = "testout " + (r.ok ? "ok" : "bad");
+    out.textContent = (r.ok ? "✓ " : "✗ ") + r.detail;
+  } catch (err) {
+    out.className = "testout bad";
+    out.textContent = "✗ " + err.message;
+  }
+}
+$("#btnTestTmdb").onclick = () => testProvider("tmdb");
+$("#btnTestLlm").onclick = () => testProvider("llm");
+$("#mSave").onclick = async () => {
+  await saveSettings();
+  $("#modal").classList.add("hidden");
+};
+$("#addRoot").onclick = async () => {
+  const p = $("#newRoot").value.trim();
+  if (!p) return;
+  try {
+    await api("/api/roots", { method: "POST", body: { path: p } });
+    $("#newRoot").value = "";
+    openSettings(); renderRootOptions();
+  } catch (err) { alert(err.message); }
+};
+$("#rootList").addEventListener("click", async e => {
+  const del = e.target.closest("[data-del-root]");
+  const tog = e.target.closest("[data-toggle-root]");
+  if (del) { await api(`/api/roots/${del.dataset.delRoot}`, { method: "DELETE" }); openSettings(); renderRootOptions(); }
+  if (tog) { await api(`/api/roots/${tog.dataset.toggleRoot}/toggle`, { method: "POST" }); openSettings(); renderRootOptions(); }
+});
+
+/* ---------- jobs / toast ---------- */
+let jobTimer = null;
+function watchJob(jid, label) {
+  $("#tTitle").textContent = label;
+  $("#toast").classList.remove("hidden");
+  clearInterval(jobTimer);
+  const poll = async () => {
+    const j = await api(`/api/jobs/${jid}`);
+    const pct = j.total ? Math.round(100 * j.progress / j.total) : (j.status === "done" ? 100 : 5);
+    $("#tFill").style.width = pct + "%";
+    $("#tLog").textContent = j.log.join("\n");
+    $("#tLog").scrollTop = $("#tLog").scrollHeight;
+    if (j.status !== "running") {
+      clearInterval(jobTimer);
+      $("#tTitle").textContent = `${label} — ${j.status}`;
+      load();
+    }
+  };
+  poll();
+  jobTimer = setInterval(poll, 1200);
+}
+
+$("#btnScan").onclick = async () => {
+  try {
+    const r = await api("/api/scan", { method: "POST", body: {} });
+    watchJob(r.job_id, "Scan");
+  } catch (err) { alert(err.message); }
+};
+$("#btnEnrich").onclick = async () => {
+  try {
+    const r = await api("/api/enrich", { method: "POST", body: {} });
+    watchJob(r.job_id, "Enrich");
+  } catch (err) { alert(err.message); }
+};
+$("#tClose").onclick = () => { clearInterval(jobTimer); $("#toast").classList.add("hidden"); };
+
+/* ---------- folder picker ---------- */
+let fpTargetInput = null;
+let fpCurrentPath = null;
+let fpParentPath = null;
+
+async function fpBrowse(path) {
+  try {
+    const d = await api(`/api/browse?path=${encodeURIComponent(path || "")}`);
+    fpCurrentPath = d.path;
+    fpParentPath = d.parent;
+    $("#fpPath").value = d.path;
+    $("#fpUp").disabled = !d.parent;
+    $("#fpShortcuts").innerHTML = d.shortcuts.map(s =>
+      `<button class="btn mini" data-fpgo="${esc(s.path)}">${esc(s.label)}</button>`).join("");
+    $("#fpDirs").innerHTML = d.dirs.length ? d.dirs.map(dir => `
+      <div class="fpdir" data-fpgo="${esc(dir.path)}" data-locked="${dir.locked ? 1 : 0}">
+        <span>📁 ${esc(dir.name)}</span>
+      </div>`).join("")
+      : '<p class="hint">No subfolders — you can select this folder.</p>';
+  } catch (err) {
+    alert(err.message);
+  }
+}
+function openPicker(inputId) {
+  fpTargetInput = inputId;
+  $("#fpModal").classList.remove("hidden");
+  const cur = $("#" + inputId).value.trim();
+  fpBrowse(cur || null);
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-browse]");
+  if (b) { openPicker(b.dataset.browse); return; }
+  const go = e.target.closest("[data-fpgo]");
+  if (go && go.dataset.locked !== "1") fpBrowse(go.dataset.fpgo);
+});
+$("#fpUp").onclick = () => { if (fpParentPath) fpBrowse(fpParentPath); };
+$("#fpClose").onclick = () => $("#fpModal").classList.add("hidden");
+$("#fpModal").addEventListener("click", e => {
+  if (e.target === $("#fpModal")) $("#fpModal").classList.add("hidden");
+});
+$("#fpSelect").onclick = () => {
+  if (fpTargetInput && fpCurrentPath) $("#" + fpTargetInput).value = fpCurrentPath;
+  $("#fpModal").classList.add("hidden");
+};
+
+/* ---------- duplicates ---------- */
+let dupGroups = [];      // last loaded duplicate groups
+let dupOffline = new Set(); // roots whose drives are not mounted
+let bulk = null;         // bulk-wizard state
+
+async function openDupes() {
+  $("#dupList").innerHTML = '<p class="hint">Scanning…</p>';
+  $("#dupModal").classList.remove("hidden");
+  try {
+    const [{ groups }, rootsInfo] = await Promise.all([
+      api("/api/duplicates"), api("/api/roots"),
+    ]);
+    dupGroups = groups;
+    dupOffline = new Set(rootsInfo.roots.filter(r => !r.exists).map(r => r.path));
+    if (!groups.length) {
+      $("#dupList").innerHTML = '<p class="hint">No duplicates found. 🎉 Every title lives in exactly one place.</p>';
+      return;
+    }
+    $("#dupList").innerHTML = groups.map(g => `
+      <div class="dupgroup">
+        <div class="duphead">
+          <b>${esc(g.title)}</b> ${g.year ? `<span class="dim">(${g.year})</span>` : ""}
+          <span class="badge ${g.kind}">${g.kind}</span>
+          ${g.scope === "episodes" ? `<span class="badge">${g.dup_episodes} ep(s) doubled</span>` : ""}
+          ${g.scope === "two_rows" ? `<span class="badge warn">cataloged twice — two library rows for the same title</span>` : ""}
+          <span class="dupdelta">${fmtSize(g.size_delta)} size difference</span>
+        </div>
+        ${g.copies.map((c, i) => `
+          <div class="dupcopy">
+            <span class="badge">${i === 0 ? "★ biggest" : "copy"}</span>
+            <span>${esc(c.label)}</span>
+            <span class="dim">${fmtSize(c.size_bytes)}${c.file_count ? ` · ${c.file_count} file(s)` : ""}</span>
+            ${g.scope === "two_rows"
+              ? `<button class="btn mini ghost" data-delrow="${c.title_id}">🗑 delete this row</button>`
+              : `<button class="btn mini ghost" data-delroot="${c.title_id}" data-root="${esc(c.root)}">🗑 delete this copy</button>`}
+          </div>`).join("")}
+      </div>`).join("");
+  } catch (err) {
+    $("#dupList").innerHTML = `<p class="hint">Failed: ${esc(err.message)}</p>`;
+  }
+}
+/* bulk wizard: only IDENTICAL copies (byte-for-byte same size) */
+function identicalGroups() {
+  return dupGroups.filter(g =>
+    g.scope !== "two_rows" &&
+    g.copies.length > 1 &&
+    g.copies.every(c => c.size_bytes === g.copies[0].size_bytes) &&
+    g.copies.some(c => c.root && !dupOffline.has(c.root))); // something deletable online
+}
+
+function startBulk() {
+  const groups = identicalGroups();
+  if (!groups.length) {
+    alert("No identical-size duplicates to bulk-delete. (Different-size copies are kept out of bulk mode on purpose — pick those manually.)");
+    return;
+  }
+  // group by location-signature so the user decides once per combination
+  const combos = new Map();
+  for (const g of groups) {
+    const sig = g.copies.map(c => c.root).sort().join(" | ");
+    if (!combos.has(sig)) combos.set(sig, []);
+    combos.get(sig).push(g);
+  }
+  bulk = { combos: [...combos.entries()], step: 0, plan: [], freed: 0, count: 0 };
+  $("#dupList").innerHTML = '<p class="hint">Bulk delete — deciding…</p>';
+  bulkStep();
+}
+
+function bulkStep() {
+  if (bulk.step >= bulk.combos.length) return bulkRun();
+  const [sig, groups] = bulk.combos[bulk.step];
+  const roots = sig.split(" | ");
+  const keepRoot = roots.find(r => !dupOffline.has(r)) || roots[0];
+  const totalMb = groups.reduce((s, g) =>
+    s + (g.copies.find(c => c.root !== keepRoot)?.size_bytes || 0) / 1e6, 0);
+  $("#dupList").innerHTML = `
+    <div class="bulkbox">
+      <h3>Combination ${bulk.step + 1} of ${bulk.combos.length}</h3>
+      <p class="hint">
+        ${groups.length} title(s) have <b>identical copies</b> (same byte size) in these locations:
+        ${roots.map(r => `<b>${esc(locBadge(r))}</b>${dupOffline.has(r) ? " (offline)" : ""}`).join(" and ")}.
+      </p>
+      <p class="hint">Which location's copies should be deleted? The others are kept. Offline drives are skipped automatically.</p>
+      <div class="bulkchoices">
+        ${roots.map(r => `
+          <button class="btn ${r === keepRoot ? "" : "primary"}" data-bulkpick="${esc(r)}"
+            ${dupOffline.has(r) ? "disabled" : ""}>
+            Delete copies on ${esc(locBadge(r))}${dupOffline.has(r) ? " (offline)" : ""}
+          </button>`).join("")}
+        <button class="btn ghost" data-bulkskip>Skip this combination</button>
+      </div>
+      <p class="hint">~${totalMb.toFixed(0)} MB would be freed by deleting from "${esc(locBadge(keepRoot))}".</p>
+    </div>`;
+}
+$("#dupList").addEventListener("click", e => {
+  if (!bulk) return;
+  const pick = e.target.closest("[data-bulkpick]");
+  if (pick) {
+    const root = pick.dataset.bulkpick;
+    const [, groups] = bulk.combos[bulk.step];
+    for (const g of groups) {
+      for (const c of g.copies) {
+        if (c.root === root && !dupOffline.has(c.root)) {
+          bulk.plan.push({ title_id: c.title_id, root: c.root });
+          bulk.freed += c.size_bytes || 0;
+          bulk.count += c.file_count || 1;
+        }
+      }
+    }
+    bulk.step++;
+    bulkStep();
+    return;
+  }
+  if (e.target.closest("[data-bulkskip]")) { bulk.step++; bulkStep(); }
+});
+
+async function bulkRun() {
+  const plan = bulk.plan;
+  const freed = bulk.freed;
+  const count = bulk.count;
+  bulk = null;
+  if (!plan.length) { openDupes(); return; }
+  if (!confirm(`Delete ${plan.length} copies (${count} files, ~${fmtSize(freed)}) from disk?\nAre you sure?`)) {
+    openDupes(); return;
+  }
+  $("#dupList").innerHTML = `<p class="hint">Deleting ${plan.length} copies…</p>`;
+  let ok = 0;
+  const failed = [];
+  for (const p of plan) {
+    try {
+      const q = p.root ? `?root=${encodeURIComponent(p.root)}` : "";
+      await api(`/api/duplicates/${p.title_id}${q}`, { method: "DELETE" });
+      ok++;
+    } catch (err) {
+      failed.push(`title ${p.title_id}: ${err.message}`);
+    }
+  }
+  const msg = `Bulk delete finished: ${ok} of ${plan.length} copies deleted.` +
+    (failed.length ? `\n\nSome failed:\n${failed.join("\n")}` : "");
+  alert(msg);
+  openDupes(); load();
+}
+
+$("#btnDupes").onclick = openDupes;
+$("#btnBulk").onclick = startBulk;
+$("#dClose2").onclick = () => { bulk = null; $("#dupModal").classList.add("hidden"); };
+$("#dupModal").addEventListener("click", e => {
+  if (e.target === $("#dupModal")) { bulk = null; $("#dupModal").classList.add("hidden"); }
+});
+async function delCopy(btn, payload, what) {
+  if (!payload.title_id || payload.title_id === "undefined") {
+    alert("Internal error: missing title id — please reload the page (Ctrl+Shift+R) and try again.");
+    return;
+  }
+  if (!confirm(`Are you sure? This deletes ${what} from disk.`)) return;
+  btn.disabled = true;
+  try {
+    // root as query param: immune to content-type/422 quirks
+    const q = payload.root ? `?root=${encodeURIComponent(payload.root)}` : "";
+    const r = await api(`/api/duplicates/${payload.title_id}${q}`, { method: "DELETE" });
+    // instant feedback: remove the copy row, then re-check the group
+    const copyRow = btn.closest(".dupcopy");
+    if (copyRow) copyRow.remove();
+    btn.textContent = `deleted (${r.removed_files} files)`;
+    // remaining duplicate state may have changed: refresh view + library
+    setTimeout(() => { openDupes(); load(); }, 600);
+  } catch (err) {
+    btn.disabled = false;
+    alert(err.message);
+  }
+}
+$("#dupList").addEventListener("click", e => {
+  const byRoot = e.target.closest("[data-delroot]");
+  if (byRoot) return delCopy(byRoot, { title_id: byRoot.dataset.delroot, root: byRoot.dataset.root }, "this copy");
+  const byRow = e.target.closest("[data-delrow]");
+  if (byRow) return delCopy(byRow, { title_id: byRow.dataset.delrow }, "this library row");
+});
+
+/* ---------- boot ---------- */
+renderRootOptions().then(load).catch(err => {
+  $("#empty").classList.remove("hidden");
+  $("#empty").textContent = `Failed to load: ${err.message}`;
+});

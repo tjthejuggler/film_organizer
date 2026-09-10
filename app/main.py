@@ -1,0 +1,585 @@
+"""FastAPI application: API routes + static frontend."""
+import json
+import os
+import shutil
+import subprocess
+import threading
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from . import config, db, duplicates, enrich, jobs, llm, mover, scanner, tmdb
+
+db.init()
+
+app = FastAPI(title="Film Organizer", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+
+@app.middleware("http")
+async def no_stale_static(request, call_next):
+    """Never let the browser run old frontend code: stale cached JS caused
+    'button clicked but nothing happened' reports. API responses must never
+    be cached either, so lists reflect deletes instantly."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/api"):
+        resp.headers["Cache-Control"] = "no-store"
+    else:
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+# ---- models ---------------------------------------------------------------
+class RootIn(BaseModel):
+    path: str
+    label: str = None
+
+
+class SettingsIn(BaseModel):
+    values: dict
+
+
+class JobIn(BaseModel):
+    root_ids: list = None
+    title_ids: list = None
+    force: bool = False
+
+
+class WatchedIn(BaseModel):
+    watched: bool
+
+
+class TitlePatch(BaseModel):
+    title: str = None
+    kind: str = None
+    year: int = None
+
+
+class MoveIn(BaseModel):
+    target: str  # "internal" | "external"
+
+
+# ---- helpers --------------------------------------------------------------
+def _title_payload(row) -> dict:
+    d = dict(row)
+    for k in ("genres", "stars"):
+        try:
+            d[k] = json.loads(d.get(k) or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d[k] = []
+    d["watched"] = bool(d["watched_manual"]) if d["watched_manual"] is not None \
+        else bool(d["watched_folder"])
+    return d
+
+
+def _get_title_or_404(tid: int):
+    row = db.q1("SELECT * FROM titles WHERE id=?", (tid,))
+    if not row:
+        raise HTTPException(404, "title not found")
+    return row
+
+
+def _secrets_masked(all_settings: dict) -> dict:
+    out = {}
+    for k, v in all_settings.items():
+        if k in config.SECRET_KEYS and v:
+            out[k] = ("*" * 6) + v[-4:] if len(v) > 4 else "******"
+            out[k + "_set"] = True
+        else:
+            out[k] = v
+            out[k + "_set"] = bool(v)
+    return out
+
+
+# ---- static frontend ------------------------------------------------------
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(config.STATIC_DIR, "index.html"))
+
+
+@app.get("/favicon.ico")
+def favicon():
+    path = os.path.join(config.STATIC_DIR, "favicon.svg")
+    return FileResponse(path, media_type="image/svg+xml") if os.path.exists(path) \
+        else JSONResponse({}, status_code=204)
+
+
+def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
+                   root=None, missing_on=None, cert=None):
+    """Shared WHERE builder so /api/titles and /api/stats agree exactly."""
+    where, params = [], []
+    if q:
+        where.append("(t.title LIKE ? OR t.original_title LIKE ? OR t.overview LIKE ?)")
+        params += [f"%{q}%"] * 3
+    if kind in ("movie", "series"):
+        where.append("t.kind=?")
+        params.append(kind)
+    if watched == "watched":
+        where.append("(CASE WHEN t.watched_manual IS NOT NULL THEN t.watched_manual ELSE t.watched_folder END)=1")
+    elif watched == "unwatched":
+        where.append("(CASE WHEN t.watched_manual IS NOT NULL THEN t.watched_manual ELSE t.watched_folder END)=0")
+    if match == "!not_found":
+        where.append("(t.match_status IS NULL OR t.match_status != 'not_found')")
+    elif match:
+        where.append("t.match_status=?")
+        params.append(match)
+    if genre:
+        where.append("t.genres LIKE ?")
+        params.append(f'%"{genre}"%')
+    if root:
+        where.append("EXISTS (SELECT 1 FROM files f WHERE f.title_id=t.id AND f.path LIKE ?)")
+        params.append(f"{root}%")
+    if missing_on == "1":
+        where.append("EXISTS (SELECT 1 FROM files f WHERE f.title_id=t.id AND f.missing=1)")
+    if cert:
+        where.append("t.cert=?")
+        params.append(cert)
+    return where, params
+
+
+# ---- library / media ------------------------------------------------------
+@app.get("/api/titles")
+def list_titles(
+    q: str = None, kind: str = None, watched: str = None,
+    match: str = None, genre: str = None,
+    root: str = None, missing_on: str = None, cert: str = None,
+    sort: str = "title", direction: str = "asc",
+    limit: int = 10000, offset: int = 0,
+):
+    where, params = _filter_clause(q, kind, watched, match, genre,
+                                   root, missing_on, cert)
+
+    ORDER = {
+        "title": "t.title COLLATE NOCASE", "year": "t.year",
+        "rating": "COALESCE(t.rating_imdb, t.rating_tmdb)",
+        "rt": "t.rating_rt",
+        "cataloged": "t.cataloged_at",
+        "created": "COALESCE(t.created_at, t.cataloged_at)",
+        "size": "t.size_bytes",
+        "watched": "(CASE WHEN t.watched_manual IS NOT NULL THEN t.watched_manual ELSE t.watched_folder END)",
+        "match": "t.match_status",
+    }
+    order = ORDER.get(sort, ORDER["title"])
+    direction = "DESC" if direction.lower() == "desc" else "ASC"
+
+    wsql = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = db.q(
+        f"""SELECT t.* FROM titles t{wsql}
+            ORDER BY {order} {direction}, t.title COLLATE NOCASE
+            LIMIT ? OFFSET ?""",
+        params + [limit, offset],
+    )
+    total = db.q1(f"SELECT COUNT(*) n FROM titles t{wsql}", params)["n"]
+
+    # genre facet + per-title roots summary
+    genres = sorted({
+        g for r in db.q("SELECT genres FROM titles WHERE genres IS NOT NULL")
+        for g in (json.loads(r["genres"] or "[]"))
+    })
+    out = [_title_payload(r) for r in rows]
+    for t in out:
+        roots = db.q(
+            """SELECT DISTINCT r.path p FROM files f
+               JOIN roots r ON f.path LIKE r.path || '%'
+               WHERE f.title_id=? AND f.missing=0 ORDER BY r.path""",
+            (t["id"],),
+        )
+        t["locations"] = [r["p"] for r in roots]
+        missing = db.q1("SELECT COUNT(*) n FROM files WHERE title_id=? AND missing=1", (t["id"],))["n"]
+        t["missing_files"] = missing
+    return {"total": total, "titles": out, "genres": genres}
+
+
+@app.get("/api/titles/{tid}")
+def get_title(tid: int):
+    row = _get_title_or_404(tid)
+    d = _title_payload(row)
+    d["files"] = [dict(f) for f in db.q(
+        "SELECT id, path, size_bytes, season, episode, watched_folder, missing FROM files WHERE title_id=? ORDER BY path",
+        (tid,))]
+    d["locations"] = [r["p"] for r in db.q(
+        """SELECT DISTINCT r.path p FROM files f
+           JOIN roots r ON f.path LIKE r.path || '%'
+           WHERE f.title_id=? AND f.missing=0 ORDER BY r.path""", (tid,))]
+    return d
+
+
+@app.patch("/api/titles/{tid}")
+def patch_title(tid: int, body: TitlePatch):
+    _get_title_or_404(tid)
+    sets, vals = [], []
+    identity_change = body.title or body.kind or body.year is not None
+    if body.title:
+        sets.append("title=?")
+        vals.append(body.title)
+    if body.kind in ("movie", "series"):
+        sets.append("kind=?")
+        vals.append(body.kind)
+    if body.year is not None:
+        sets.append("year=?")
+        vals.append(body.year)
+    if identity_change:
+        row = db.q1("SELECT * FROM titles WHERE id=?", (tid,))
+        new_title = body.title or row["title"]
+        # a kind flip usually means the old year came from a wrong match;
+        # unless the user explicitly sets a year, clear it so the next
+        # search isn't filtered to the wrong release
+        if body.kind and body.year is None:
+            sets.append("year=NULL")
+            new_year = None
+        else:
+            new_year = body.year if body.year is not None else row["year"]
+        new_kind = body.kind or row["kind"]
+        key = scanner.dedupe_key(new_kind, new_title, new_year)
+        sets.append("dedupe_key=?")
+        vals.append(key)
+        # wipe polluted enrichment so the next Enrich starts clean
+        sets.append(
+            "match_status='unmatched', match_error=NULL, enriched_at=NULL, "
+            "data_source=NULL, tmdb_id=NULL, imdb_id=NULL, overview=NULL, "
+            "rating_imdb=NULL, rating_tmdb=NULL, poster=NULL, backdrop=NULL, "
+            "stars='[]', genres='[]'"
+        )
+        sets.append("title_locked=1, kind_locked=1")
+        vals.append(tid)
+        with db.tx() as c:
+            c.execute(f"UPDATE titles SET {', '.join(sets)} WHERE id=?", vals)
+    return get_title(tid)
+
+
+@app.post("/api/titles/{tid}/watched")
+def set_watched(tid: int, body: WatchedIn):
+    _get_title_or_404(tid)
+    from .jobs import now_iso
+    with db.tx() as c:
+        c.execute(
+            "UPDATE titles SET watched_manual=?, watched_at=? WHERE id=?",
+            (1 if body.watched else 0, now_iso() if body.watched else None, tid),
+        )
+    return {"ok": True, "watched": body.watched}
+
+
+@app.delete("/api/titles/{tid}")
+def delete_title(tid: int):
+    """Remove a title from the catalog WITHOUT touching files on disk."""
+    _get_title_or_404(tid)
+    with db.tx() as c:
+        c.execute("DELETE FROM titles WHERE id=?", (tid,))
+    return {"ok": True}
+
+
+@app.delete("/api/titles/{tid}/files")
+def delete_title_files(tid: int):
+    """Delete a title AND its files from disk (main-list trash button).
+    Refuses with 409 + drive list when any source drive is offline, so the
+    catalog never claims 'deleted' while bytes remain on a sleeping disk."""
+    row = _get_title_or_404(tid)
+    files = [dict(f) for f in db.q(
+        "SELECT path, missing FROM files WHERE title_id=?", (tid,))]
+    if not files:
+        raise HTTPException(404, "no files recorded for this title")
+
+    roots = [r["path"] for r in db.q("SELECT path FROM roots ORDER BY length(path) DESC")]
+
+    def root_of(p):
+        for r in roots:
+            if p == r or p.startswith(r.rstrip("/") + "/"):
+                return r
+        return None
+
+    offline = set()
+    for f in files:
+        if f["missing"]:
+            continue
+        rt = root_of(f["path"])
+        if rt and not os.path.isdir(rt):
+            offline.add(rt)
+    if offline:
+        raise HTTPException(
+            409, "Connect these drives first, then retry: "
+            + ", ".join(sorted(offline)))
+
+    result = duplicates._delete_title_files(files, tid, delete_row=True)
+    return {"ok": True, "title": row["title"], **result}
+
+
+@app.get("/api/titles/{tid}/files/{fid}/open")
+def open_location(tid: int, fid: int):
+    """Reveal the file's folder in the OS file manager."""
+    f = db.q1("SELECT * FROM files WHERE id=? AND title_id=?", (fid, tid))
+    if not f:
+        raise HTTPException(404, "file not found")
+    target = f["path"] if f["is_dir"] else os.path.dirname(f["path"])
+    if not os.path.exists(target):
+        raise HTTPException(410, "path no longer exists on disk")
+    for cmd in (("xdg-open", target),):
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return {"ok": True}
+        except OSError:
+            continue
+    raise HTTPException(500, "could not open file manager")
+
+
+# ---- roots ----------------------------------------------------------------
+@app.get("/api/roots")
+def list_roots():
+    rows = db.q("SELECT * FROM roots ORDER BY id")
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["exists"] = os.path.isdir(r["path"])
+        d["stats"] = dict(db.q1(
+            """SELECT COUNT(DISTINCT t.id) titles,
+                      SUM(t.size_bytes) bytes
+               FROM titles t JOIN files f ON f.title_id=t.id
+               WHERE f.path LIKE ? || '%'""", (r["path"].rstrip("/") + "/",)) or {})
+        out.append(d)
+    return {"roots": out}
+
+
+@app.post("/api/roots")
+def add_root(body: RootIn):
+    p = os.path.abspath(os.path.expanduser(body.path))
+    if not os.path.isdir(p):
+        raise HTTPException(400, f"not a directory: {p}")
+    with db.tx() as c:
+        c.execute("INSERT OR IGNORE INTO roots(path, label) VALUES(?,?)", (p, body.label))
+    return {"ok": True, "path": p}
+
+
+@app.delete("/api/roots/{rid}")
+def delete_root(rid: int):
+    with db.tx() as c:
+        c.execute("DELETE FROM roots WHERE id=?", (rid,))
+    return {"ok": True}
+
+
+@app.post("/api/roots/{rid}/toggle")
+def toggle_root(rid: int):
+    with db.tx() as c:
+        c.execute("UPDATE roots SET enabled = 1 - enabled WHERE id=?", (rid,))
+    return {"ok": True}
+
+
+# ---- settings -------------------------------------------------------------
+@app.get("/api/settings")
+def get_settings():
+    return _secrets_masked(db.settings_all())
+
+
+@app.post("/api/settings")
+def save_settings(body: SettingsIn):
+    for k, v in body.values.items():
+        if k in config.SECRET_KEYS:
+            if v is None or ("*" in str(v)):
+                continue  # masked placeholder sent back: keep existing
+        db.settings_set(k, str(v) if v is not None else "")
+    return get_settings()
+
+
+@app.post("/api/test/llm")
+def test_llm():
+    """Saves nothing; probes the STORED config. UI saves fields first."""
+    ok, detail = llm.probe()
+    return {"ok": ok, "detail": detail}
+
+
+@app.post("/api/test/tmdb")
+def test_tmdb():
+    ok, detail = tmdb.probe()
+    return {"ok": ok, "detail": detail}
+
+
+# ---- jobs (scan / enrich) -------------------------------------------------
+@app.post("/api/scan")
+def start_scan(body: JobIn = None):
+    body = body or JobIn()
+    roots = scanner.root_dirs_for_scan(body.root_ids)
+    if not roots:
+        raise HTTPException(400, "no enabled roots to scan")
+    jid = jobs.create("scan", total=0)
+    jobs.log(jid, f"Scan requested for: {', '.join(roots)}")
+    jobs.run_background(jid, lambda j: scanner.scan_roots(j, roots))
+    return {"job_id": jid}
+
+
+@app.post("/api/enrich")
+def start_enrich(body: JobIn = None):
+    # Always allowed: rows are marked 'no_provider' when no TMDB key is set.
+    body = body or JobIn()
+    jid = jobs.create("enrich", total=0)
+    jobs.run_background(
+        jid, lambda j: enrich.run_enrich(j, title_ids=body.title_ids,
+                                         force=body.force, only_unmatched=not body.force))
+    return {"job_id": jid}
+
+
+@app.post("/api/backfill-ratings")
+def backfill_ratings():
+    """Fill cert + Rotten Tomatoes for already-matched titles (light pass)."""
+    jid = jobs.create("backfill", total=0)
+    jobs.run_background(jid, lambda j: enrich.run_backfill(j))
+    return {"job_id": jid}
+
+
+@app.get("/api/jobs/{jid}")
+def get_job(jid: str):
+    row = db.q1("SELECT * FROM jobs WHERE id=?", (jid,))
+    if not row:
+        raise HTTPException(404, "job not found")
+    d = dict(row)
+    d["log"] = (d["log"] or "").strip().split("\n")[-30:]
+    return d
+
+
+# ---- move between internal / external storage -----------------------------
+@app.post("/api/titles/{tid}/move")
+def move_title(tid: int, body: MoveIn):
+    if body.target not in ("internal", "external"):
+        raise HTTPException(400, "target must be 'internal' or 'external'")
+    _get_title_or_404(tid)  # 404 early; mover raises ValueError for config issues
+    jid = jobs.create("move", total=0)
+    jobs.log(jid, f"Move requested: title {tid} -> {body.target}")
+
+    def _run(job):
+        error = None
+        try:
+            mover.move_title(job, tid, body.target)
+        except Exception as e:
+            jobs.log(job, f"FAILED: {e}")
+            error = str(e)
+        jobs.finish(job, error=error)
+
+    threading.Thread(target=_run, args=(jid,), daemon=True).start()
+    return {"job_id": jid}
+
+
+# ---- duplicates ------------------------------------------------------------
+@app.get("/api/duplicates")
+def list_duplicates():
+    return {"groups": duplicates.find_duplicates()}
+
+
+class DeleteCopyIn(BaseModel):
+    root: str = None
+
+
+@app.delete("/api/duplicates/{tid}")
+def delete_duplicate_copy(tid: int, root: str = None, body: DeleteCopyIn = None):
+    # root as query param preferred (robust against stale/cached clients);
+    # JSON body accepted too
+    r = root if root is not None else (body.root if body else None)
+    try:
+        return duplicates.delete_copy(tid, root=r)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+def _unquote_mnt(p: str) -> str:
+    """Decode /proc/mounts octal escapes: \\040 space, \\011 tab,
+    \\012 newline, \\134 backslash."""
+    for esc, ch in (("\\134", "\\"), ("\\040", " "), ("\\011", "\t"), ("\\012", "\n")):
+        p = p.replace(esc, ch)
+    return p
+
+
+def _mounted_drives() -> list:
+    """Real disk mounts (external USB drives etc.) for the folder picker.
+    Reads /proc/mounts; excludes loop/zram/system mounts. Needed because the
+    udisks parent dirs (/run/media/<user>) are root-owned and not listable
+    by the app user - we shortcut straight to each mounted drive instead."""
+    good_fs = {"ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "exfat",
+               "ntfs", "ntfs3", "ntfs-3g", "fuseblk", "f2fs"}
+    drives = []
+    seen = set()
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                dev, mnt, fstype = parts[0], parts[1], parts[2]
+                if not dev.startswith("/dev/"):
+                    continue
+                if dev.startswith("/dev/loop") or dev.startswith("/dev/zram"):
+                    continue
+                if fstype not in good_fs:
+                    continue
+                if mnt == "/" or mnt.startswith("/boot"):
+                    continue
+                if mnt in seen:
+                    continue
+                seen.add(mnt)
+                mnt = _unquote_mnt(mnt)
+                drives.append({"label": f"💾 {os.path.basename(mnt)}", "path": mnt})
+    except OSError:
+        pass
+    return drives
+
+
+@app.get("/api/browse")
+def browse(path: str = None):
+    """List directories at `path` for the folder-picker dialog.
+    Local single-user app: full filesystem visibility is intentional."""
+    home = os.path.expanduser("~")
+    target = os.path.abspath(os.path.expanduser(path)) if path else home
+    if not os.path.isdir(target):
+        raise HTTPException(400, f"not a directory: {target}")
+
+    dirs = []
+    denied = False
+    try:
+        entries = os.listdir(target)
+    except PermissionError:
+        denied = True
+        entries = []
+
+    for name in sorted(entries, key=str.lower):
+        if name.startswith("."):
+            continue
+        full = os.path.join(target, name)
+        if os.path.isdir(full):
+            try:
+                os.listdir(full)  # readable?
+                dirs.append({"name": name, "path": full})
+            except PermissionError:
+                dirs.append({"name": name + " (locked)", "path": full, "locked": True})
+
+    shortcuts = [{"label": "🏠 Home", "path": home}]
+    shortcuts += _mounted_drives()
+    shortcuts.append({"label": "🖥  / (root)", "path": "/"})
+    parent = os.path.dirname(target) if target != "/" else None
+    return {"path": target, "parent": parent, "dirs": dirs,
+            "shortcuts": shortcuts, "denied": denied}
+
+
+# ---- disk usage -----------------------------------------------------------
+@app.get("/api/stats")
+def stats(
+    q: str = None, kind: str = None, watched: str = None,
+    match: str = None, genre: str = None,
+    root: str = None, missing_on: str = None, cert: str = None,
+):
+    """Counts reflect the CURRENT FILTER (same params as /api/titles),
+    with a watched/unwatched breakdown of the filtered set."""
+    where, params = _filter_clause(q, kind, watched, match, genre,
+                                   root, missing_on, cert)
+    wsql = (" WHERE " + " AND ".join(where)) if where else ""
+    r = db.q1(
+        f"""SELECT COUNT(*) n,
+                  SUM(CASE WHEN kind='movie' THEN 1 ELSE 0 END) movies,
+                  SUM(CASE WHEN kind='series' THEN 1 ELSE 0 END) series,
+                  SUM(CASE WHEN (CASE WHEN watched_manual IS NOT NULL THEN watched_manual ELSE watched_folder END)=1 THEN 1 ELSE 0 END) watched,
+                  SUM(CASE WHEN (CASE WHEN watched_manual IS NOT NULL THEN watched_manual ELSE watched_folder END)=0 THEN 1 ELSE 0 END) unwatched,
+                  SUM(size_bytes) bytes
+           FROM titles t{wsql}""", params)
+    d = dict(r)
+    d["watched"] = d["watched"] or 0
+    d["unwatched"] = d["unwatched"] or 0
+    return d
+
+
+# ---- static frontend assets — MUST stay last so /api/* routes win ---------
+app.mount("/", StaticFiles(directory=config.STATIC_DIR, html=True), name="static")

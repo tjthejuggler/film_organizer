@@ -1,0 +1,23 @@
+# virtual env
+.venv/
+
+# python artifacts
+__pycache__/
+*.pyc
+
+# local database & runtime state (contains your personal media catalog)
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3*
+nohup.out
+*.log
+
+# secrets / local env
+.env
+.env.*
+
+# tooling
+.codebase-memory/
+.DS_Store
