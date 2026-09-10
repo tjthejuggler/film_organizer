@@ -1,4 +1,6 @@
 """FastAPI application: API routes + static frontend."""
+import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -6,7 +8,7 @@ import subprocess
 import threading
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -239,6 +241,8 @@ def list_titles(
         for g in (json.loads(r["genres"] or "[]"))
     })
     out = [_title_payload(r) for r in rows]
+    # live drive connectivity: isdir per distinct location (cached per request)
+    online = {}
     for t in out:
         roots = db.q(
             """SELECT DISTINCT r.path p FROM files f
@@ -246,7 +250,12 @@ def list_titles(
                WHERE f.title_id=? AND f.missing=0 ORDER BY r.path""",
             (t["id"],),
         )
-        t["locations"] = [r["p"] for r in roots]
+        locs = [r["p"] for r in roots]
+        t["locations"] = locs
+        t["offline_locations"] = [
+            p for p in locs
+            if online.setdefault(p, os.path.isdir(p)) is False
+        ]
         missing = db.q1("SELECT COUNT(*) n FROM files WHERE title_id=? AND missing=1", (t["id"],))["n"]
         t["missing_files"] = missing
     return {"total": total, "titles": out, "genres": genres}
@@ -705,6 +714,40 @@ def delete_duplicate_copy(tid: int, root: str = None, body: DeleteCopyIn = None)
         return duplicates.delete_copy(tid, root=r)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ---- live drive connect / disconnect events --------------------------------
+def _drives_signature() -> str:
+    """Fingerprint of what is mounted + which library roots are reachable.
+    /proc/mounts changes whenever a drive is plugged or unplugged; the
+    per-root liveness bit catches mount points that silently disappear."""
+    try:
+        with open("/proc/mounts") as f:
+            mounts = f.read()
+    except OSError:
+        mounts = ""
+    roots = ";".join(
+        f"{r['path']}={1 if os.path.isdir(r['path']) else 0}"
+        for r in db.q("SELECT path FROM roots ORDER BY id"))
+    return hashlib.sha1((mounts + "|" + roots).encode()).hexdigest()
+
+
+@app.get("/api/events/drives")
+async def drive_events():
+    """Server-sent events fired whenever a drive connects or disconnects.
+    The frontend reloads the table so rows show connected/disconnected
+    locations immediately — no manual page refresh needed."""
+    async def gen():
+        last = _drives_signature()
+        yield f"data: {json.dumps({'signature': last})}\n\n"
+        while True:
+            await asyncio.sleep(2)
+            cur = _drives_signature()
+            if cur != last:
+                last = cur
+                yield f"data: {json.dumps({'signature': cur})}\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store"})
 
 
 def _unquote_mnt(p: str) -> str:

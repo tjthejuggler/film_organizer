@@ -9,6 +9,27 @@ const state = {
   titles: [], genres: [],
 };
 
+/* ---------- UI state persistence (survives refresh & restart) ---------- */
+const STATE_KEY = "film_organizer_ui_state";
+function saveState() {
+  const { q, kind, watched, genre, root, match, missing, wanted, sort, dir } = state;
+  try {
+    localStorage.setItem(STATE_KEY,
+      JSON.stringify({ q, kind, watched, genre, root, match, missing, wanted, sort, dir }));
+  } catch (e) { /* private mode etc. — persistence is best-effort */ }
+}
+function restoreState() {
+  try { Object.assign(state, JSON.parse(localStorage.getItem(STATE_KEY) || "{}")); }
+  catch (e) { /* corrupt entry -> defaults */ }
+}
+function applySortIndicators() {
+  $$("th.sortable").forEach(t => {
+    t.classList.remove("sorted-asc", "sorted-desc");
+    if (t.dataset.sort === state.sort)
+      t.classList.add(state.dir === "asc" ? "sorted-asc" : "sorted-desc");
+  });
+}
+
 function fmtSize(b) {
   if (!b) return "—";
   const u = ["B", "KB", "MB", "GB", "TB"];
@@ -44,6 +65,7 @@ async function api(path, opts = {}) {
 
 /* ---------- table ---------- */
 async function load() {
+  saveState(); // every filter/sort change funnels through here
   const p = new URLSearchParams();
   if (state.q) p.set("q", state.q);
   if (state.kind) p.set("kind", state.kind);
@@ -120,14 +142,21 @@ function renderRows() {
     const genreTags = (t.genres || []).slice(0, 3).map(g =>
       `<span class="badge genre">${esc(g)}</span>`).join("");
     const wantedBadge = t.wanted ? '<span class="badge wanted" title="On the wishlist — submitted via API or toggled here">★ wanted</span>' : "";
-    return `<tr data-id="${t.id}" class="${watched ? "watched" : ""}${t.wanted ? " is-wanted" : ""}">
+    // a title is OFFLINE when every location it lives on is currently
+    // disconnected (e.g. its only copy sits on an unplugged drive)
+    const offlineSet = t.offline_locations || [];
+    const allOff = (t.locations || []).length > 0 &&
+      (t.locations || []).every(l => offlineSet.includes(l));
+    const offlineBadge = allOff
+      ? '<span class="badge offline" title="None of this title\'s drives are currently connected">⚠ offline</span>' : "";
+    return `<tr data-id="${t.id}" class="${watched ? "watched" : ""}${t.wanted ? " is-wanted" : ""}${allOff ? " is-offline" : ""}">
       <td><div class="tcell">
         ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
                    : `<div class="thumb ph">🎬</div>`}
         <div>
           <div class="tname">${esc(t.title)}</div>
           <div style="margin-top:3px">
-            <span class="badge ${t.kind}">${t.kind}</span>${wantedBadge}${matchBadge}
+            <span class="badge ${t.kind}">${t.kind}</span>${offlineBadge}${wantedBadge}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
             ${genreTags}
           </div>
@@ -139,8 +168,10 @@ function renderRows() {
       <td class="c">${rating ? `<span class="rating">★ ${rating.toFixed(1)}</span>` : "—"}</td>
       <td class="c">${t.rating_rt != null ? `<span class="rt ${t.rating_rt >= 60 ? "fresh" : "rotten"}">${t.rating_rt}%</span>` : "—"}</td>
       <td class="meta-col">${starChips}${starChips && whoPerson ? "<br>" : ""}${whoPerson}</td>
-      <td class="where">${(t.locations || []).map(l =>
-        `<span class="loc" title="${esc(l)}">${esc(locBadge(l))}</span>`).join("")}</td>
+      <td class="where">${(t.locations || []).map(l => {
+        const off = (t.offline_locations || []).includes(l);
+        return `<span class="loc${off ? " off" : ""}" title="${esc(l)}${off ? " — drive disconnected" : ""}">${esc(locBadge(l))}${off ? " ⚠" : ""}</span>`;
+      }).join("")}</td>
       <td class="r">${t.wanted ? "—" : fmtSize(t.size_bytes)}</td>
       <td title="${t.created_at ? "created" : "created unknown — showing catalog date (files on offline drive)"}">${fmtDate(t.created_at || t.cataloged_at)}</td>
       <td class="actions">
@@ -160,8 +191,7 @@ $$("th.sortable").forEach(th => th.addEventListener("click", () => {
   const k = th.dataset.sort;
   if (state.sort === k) state.dir = state.dir === "asc" ? "desc" : "asc";
   else { state.sort = k; state.dir = "asc"; }
-  $$("th.sortable").forEach(t => t.classList.remove("sorted-asc", "sorted-desc"));
-  th.classList.add(state.dir === "asc" ? "sorted-asc" : "sorted-desc");
+  applySortIndicators();
   load();
 }));
 
@@ -750,8 +780,34 @@ $("#dupList").addEventListener("click", e => {
   if (byRow) return delCopy(byRow, { title_id: byRow.dataset.delrow }, "this library row");
 });
 
+/* ---------- live drive connect / disconnect (SSE) ---------- */
+let driveReloadTimer = null;
+function watchDrives() {
+  try {
+    const es = new EventSource("/api/events/drives");
+    es.onmessage = () => {
+      clearTimeout(driveReloadTimer);
+      // debounce: a single plug/unplug can emit several signature flips
+      driveReloadTimer = setTimeout(() => { load(); renderRootOptions(); }, 400);
+    };
+  } catch (e) { /* EventSource unavailable — manual refresh still works */ }
+}
+
 /* ---------- boot ---------- */
-renderRootOptions().then(load).catch(err => {
-  $("#empty").classList.remove("hidden");
-  $("#empty").textContent = `Failed to load: ${err.message}`;
-});
+restoreState();
+// reflect the restored state in the controls before the first load
+$("#search").value = state.q;
+$("#matchSel").value = state.match;
+$("#wantedSel").value = state.wanted;
+$("#onlyMissing").checked = !!state.missing;
+$$("#kindChips .chip").forEach(c => c.classList.toggle("on", (c.dataset.kind || "") === state.kind));
+$$("#watchChips .chip").forEach(c => c.classList.toggle("on", (c.dataset.w || "") === state.watched));
+applySortIndicators();
+renderRootOptions() // sets #rootSel to state.root once options exist
+  .then(load)
+  .then(() => { $("#genreSel").value = state.genre; }) // options exist only after first load
+  .catch(err => {
+    $("#empty").classList.remove("hidden");
+    $("#empty").textContent = `Failed to load: ${err.message}`;
+  });
+watchDrives();

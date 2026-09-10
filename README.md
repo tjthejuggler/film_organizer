@@ -123,6 +123,15 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-10 (2)** — **live drive events + remembered filters**: the table
+  now reloads by itself when a drive is connected/disconnected (server-sent
+  events on `/api/events/drives` watch `/proc/mounts` + per-root liveness, 2 s
+  poll, debounced reload; the "Where" column marks disconnected locations in
+  amber with a ⚠). Sort, filters and search are remembered between page
+  refreshes and app restarts via localStorage.
+  Also fixed: clicking ♥ returned *405 Method Not Allowed* because the running
+  uvicorn process predated the favorite route (no `--reload`); restarting the
+  server resolves it.
 - **2026-09-10** — **manual edits survive re-enrichment**: every field you fix
   in the edit form is locked (🔒 in the form); Enrich and the ratings backfill
   skip locked fields. Clearing a field unlocks it so Enrich refetches it.
