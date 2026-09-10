@@ -82,7 +82,9 @@ def search_movie(name: str, year=None) -> list:
     return [
         {"id": r["id"], "name": r.get("title") or "", "date": r.get("release_date"),
          "score": score(name, year, r.get("title") or "", r.get("release_date")),
-         "popularity": r.get("popularity") or 0}
+         "popularity": r.get("popularity") or 0,
+         "poster": _img(r.get("poster_path"), "w185"),
+         "overview": (r.get("overview") or "")[:200]}
         for r in data.get("results", [])
     ]
 
@@ -93,7 +95,9 @@ def search_tv(name: str, year=None) -> list:
     return [
         {"id": r["id"], "name": r.get("name") or "", "date": r.get("first_air_date"),
          "score": score(name, year, r.get("name") or "", r.get("first_air_date")),
-         "popularity": r.get("popularity") or 0}
+         "popularity": r.get("popularity") or 0,
+         "poster": _img(r.get("poster_path"), "w185"),
+         "overview": (r.get("overview") or "")[:200]}
         for r in data.get("results", [])
     ]
 

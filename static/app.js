@@ -4,7 +4,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
 const state = {
   q: "", kind: "", watched: "", genre: "", root: "", match: "!not_found", missing: false,
-  wanted: "",
+  wanted: "", seen: "",
   sort: "title", dir: "asc",
   titles: [], genres: [],
 };
@@ -12,10 +12,10 @@ const state = {
 /* ---------- UI state persistence (survives refresh & restart) ---------- */
 const STATE_KEY = "film_organizer_ui_state";
 function saveState() {
-  const { q, kind, watched, genre, root, match, missing, wanted, sort, dir } = state;
+  const { q, kind, watched, genre, root, match, missing, wanted, seen, sort, dir } = state;
   try {
     localStorage.setItem(STATE_KEY,
-      JSON.stringify({ q, kind, watched, genre, root, match, missing, wanted, sort, dir }));
+      JSON.stringify({ q, kind, watched, genre, root, match, missing, wanted, seen, sort, dir }));
   } catch (e) { /* private mode etc. — persistence is best-effort */ }
 }
 function restoreState() {
@@ -75,6 +75,7 @@ async function load() {
   if (state.match) p.set("match", state.match);
   if (state.missing) p.set("missing_on", "1");
   if (state.wanted) p.set("wanted", state.wanted);
+  if (state.seen) p.set("seen", state.seen);
   p.set("sort", state.sort); p.set("direction", state.dir);
   // stats use the SAME filter params (minus sort) so the top bar reflects
   // everything that made it through the current filter
@@ -142,6 +143,7 @@ function renderRows() {
     const genreTags = (t.genres || []).slice(0, 3).map(g =>
       `<span class="badge genre">${esc(g)}</span>`).join("");
     const wantedBadge = t.wanted ? '<span class="badge wanted" title="On the wishlist — submitted via API or toggled here">★ wanted</span>' : "";
+    const seenBadge = t.history ? '<span class="badge seen" title="Seen log — watched but no file owned">👁 seen</span>' : "";
     // a title is OFFLINE when every location it lives on is currently
     // disconnected (e.g. its only copy sits on an unplugged drive);
     // ONLINE when at least one location is connected (ready to watch)
@@ -154,14 +156,14 @@ function renderRows() {
     // a dedicated badge just cluttered the title line
     const nextBadge = isNext
       ? '<span class="badge next" title="Pinned as Watch Next — copy sits in the aaNext folder inside the internal storage">▶ next</span>' : "";
-    return `<tr data-id="${t.id}" class="${isNext ? "is-next" : ""}${isOnline ? " is-online" : ""}${t.wanted ? " is-wanted" : ""}${allOff ? " is-offline" : ""}">
+    return `<tr data-id="${t.id}" class="${isNext ? "is-next" : ""}${isOnline ? " is-online" : ""}${t.wanted ? " is-wanted" : ""}${t.history ? " is-history" : ""}${allOff ? " is-offline" : ""}">
       <td><div class="tcell">
         ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
                    : `<div class="thumb ph">🎬</div>`}
         <div>
           <div class="tname">${esc(t.title)}</div>
           <div style="margin-top:3px">
-            <span class="badge ${t.kind}">${t.kind}</span>${nextBadge}${wantedBadge}${matchBadge}
+            <span class="badge ${t.kind}">${t.kind}</span>${nextBadge}${wantedBadge}${seenBadge}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
             ${genreTags}
           </div>
@@ -177,7 +179,7 @@ function renderRows() {
         const off = (t.offline_locations || []).includes(l);
         return `<span class="loc${off ? " off" : ""}" title="${esc(l)}${off ? " — drive disconnected" : ""}">${esc(locBadge(l))}${off ? " ⚠" : ""}</span>`;
       }).join("")}</td>
-      <td class="r">${t.wanted ? "—" : fmtSize(t.size_bytes)}</td>
+      <td class="r">${(t.wanted || t.history) && !(t.size_bytes) ? "—" : fmtSize(t.size_bytes)}</td>
       <td title="${t.created_at ? "created" : "created unknown — showing catalog date (files on offline drive)"}">${fmtDate(t.created_at || t.cataloged_at)}</td>
       <td class="actions">
         <button class="wbtn fav ${t.favorite ? "on" : ""}" data-fav="${t.id}"
@@ -218,6 +220,7 @@ $$("#watchChips .chip").forEach(c => c.addEventListener("click", () => {
 $("#genreSel").addEventListener("change", e => { state.genre = e.target.value; load(); });
 $("#rootSel").addEventListener("change", e => { state.root = e.target.value; load(); });
 $("#wantedSel").addEventListener("change", e => { state.wanted = e.target.value; load(); });
+$("#seenSel").addEventListener("change", e => { state.seen = e.target.value; load(); });
 $("#matchSel").addEventListener("change", e => { state.match = e.target.value; load(); });
 $("#onlyMissing").addEventListener("change", e => { state.missing = e.target.checked; load(); });
 
@@ -795,6 +798,168 @@ async function bulkRun() {
   openDupes(); load();
 }
 
+/* ---------- seen log (watched titles we no longer own) ---------- */
+async function openHistory() {
+  $("#histModal").classList.remove("hidden");
+  await renderHistoryList();
+}
+
+async function renderHistoryList() {
+  const { history } = await api("/api/history");
+  const el = $("#histList");
+  el.innerHTML = history.length
+    ? history.map(t => `
+      <div class="histrow" data-id="${t.id}">
+        <div>
+          <b>${esc(t.title)}</b>${t.year ? ` <span class="dim">(${t.year})</span>` : ""}
+          <span class="badge ${t.kind}">${t.kind}</span>
+          ${t.watched_at ? `<span class="dim">· seen ${fmtDate(t.watched_at)}</span>` : ""}
+          ${t.wanted_note ? `<div class="dim">${esc(t.wanted_note)}</div>` : ""}
+        </div>
+        <button class="btn mini" data-histdel="${t.id}" data-name="${esc(t.title)}">✕ Remove</button>
+      </div>`).join("")
+    : '<p class="hint">Nothing recorded yet. Add a title above — e.g. a film you saw at a friend\'s place or in a cinema.</p>';
+}
+
+$("#btnHistory").onclick = openHistory;
+$("#hClose").onclick = () => $("#histModal").classList.add("hidden");
+$("#histModal").addEventListener("click", e => {
+  if (e.target === $("#histModal")) $("#histModal").classList.add("hidden");
+});
+
+/* gather the current form values as the payload shared by check/add */
+function histFormPayload() {
+  const title = $("#hTitle").value.trim();
+  if (!title) { $("#hTitle").focus(); return null; }
+  const body = { title, kind: $("#hKind").value };
+  const year = parseInt($("#hYear").value, 10);
+  if (year) body.year = year;
+  const note = $("#hNote").value.trim();
+  if (note) body.note = note;
+  return body;
+}
+
+function histResetForm() {
+  $("#hTitle").value = ""; $("#hYear").value = ""; $("#hNote").value = "";
+  $("#hResults").innerHTML = "";
+}
+
+/* Check: local catalog first, then TMDB candidates to confirm */
+$("#hAdd").onclick = async () => {
+  const body = histFormPayload();
+  if (!body) return;
+  $("#hAdd").disabled = true;
+  $("#hResults").innerHTML = '<p class="hint">Searching…</p>';
+  try {
+    const r = await api("/api/history/search", { method: "POST", body });
+    renderHistCandidates(r, body);
+  } catch (err) {
+    $("#hResults").innerHTML = "";
+    alert(err.message);
+  }
+  $("#hAdd").disabled = false;
+};
+
+function renderHistCandidates(r, formBody) {
+  const el = $("#hResults");
+  const cards = [];
+  if (r.local.length) {
+    cards.push('<p class="hint">Already in your catalog:</p>');
+    for (const t of r.local) {
+      cards.push(`
+        <div class="cand">
+          ${t.poster ? `<img class="candimg" loading="lazy" src="${esc(t.poster)}">`
+                     : `<div class="candimg ph">🎬</div>`}
+          <div class="candtxt">
+            <b>${esc(t.title)}</b>${t.year ? ` <span class="dim">(${t.year})</span>` : ""}
+            <span class="badge ${t.kind}">${t.kind}</span>
+            ${t.history ? '<span class="badge seen">👁 seen</span>' : ""}
+            <div class="dim">${(t.genres || []).slice(0, 3).join(" · ")
+              || esc(t.overview || "").slice(0, 120)}</div>
+          </div>
+          <button class="btn mini" data-picklocal="${t.id}" data-title="${esc(t.title)}"
+            data-kind="${esc(t.kind)}" data-year="${t.year || ""}">${t.history ? "Already logged" : "Mark seen"}</button>
+        </div>`);
+    }
+  }
+  if (r.tmdb.length) {
+    cards.push(`<p class="hint">${r.local.length ? "Or is it one of these?" : "Is it one of these?"} Confirm to fetch poster/ratings:</p>`);
+    for (const c of r.tmdb) {
+      cards.push(`
+        <div class="cand">
+          ${c.poster ? `<img class="candimg" loading="lazy" src="${esc(c.poster)}">`
+                     : `<div class="candimg ph">🎬</div>`}
+          <div class="candtxt">
+            <b>${esc(c.name)}</b>${c.year ? ` <span class="dim">(${c.year})</span>` : ""}
+            <div class="dim">${esc(c.overview || "")}</div>
+          </div>
+          <button class="btn mini" data-picktmdb="${c.tmdb_id}"
+            data-name="${esc(c.name)}" data-year="${c.year || ""}">This one</button>
+        </div>`);
+    }
+  }
+  if (!r.local.length && !r.tmdb.length) {
+    cards.push(`<p class="hint">No match found${r.tmdb_error ? ` (${esc(r.tmdb_error)})` : ""}.
+      You can still record it without details:</p>`);
+  }
+  cards.push('<button class="btn mini ghost" data-skiplookup>Add without lookup</button>');
+  el.innerHTML = cards.join("");
+}
+
+/* pick handler: mark an existing row seen, or add with the pinned TMDB id */
+async function histPick(body, tmdbId, reuseTitle, reuseYear) {
+  const payload = { ...body };
+  if (tmdbId) {
+    payload.tmdb_id = tmdbId;
+    if (reuseTitle) payload.title = reuseTitle;
+    if (reuseYear) payload.year = parseInt(reuseYear, 10) || payload.year;
+  }
+  try {
+    await api("/api/history", { method: "POST", body: payload });
+    histResetForm();
+    await renderHistoryList();
+    load();
+  } catch (err) { alert(err.message); }
+}
+
+$("#hResults").addEventListener("click", e => {
+  const localBtn = e.target.closest("[data-picklocal]");
+  if (localBtn) {
+    if (localBtn.disabled || localBtn.textContent.trim() === "Already logged") return;
+    localBtn.disabled = true;
+    // reuse the backend's dedupe matching by sending the row's own identity
+    histPick({ title: localBtn.dataset.title, kind: localBtn.dataset.kind,
+               year: localBtn.dataset.year ? parseInt(localBtn.dataset.year, 10) : undefined,
+               note: (histFormPayload() || {}).note }, null);
+    return;
+  }
+  const tmdbBtn = e.target.closest("[data-picktmdb]");
+  if (tmdbBtn) {
+    tmdbBtn.disabled = true;
+    histPick(histFormPayload() || {}, tmdbBtn.dataset.picktmdb,
+             tmdbBtn.dataset.name, tmdbBtn.dataset.year);
+    return;
+  }
+  if (e.target.closest("[data-skiplookup]")) {
+    histPick(histFormPayload() || {}, null);
+  }
+});
+
+$("#histList").addEventListener("click", async e => {
+  const btn = e.target.closest("[data-histdel]");
+  if (!btn) return;
+  if (!confirm(`Remove "${btn.dataset.name}" from the seen log?`)) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/history/${btn.dataset.histdel}`, { method: "DELETE" });
+    await renderHistoryList();
+    load();
+  } catch (err) {
+    btn.disabled = false;
+    alert(err.message);
+  }
+});
+
 $("#btnDupes").onclick = openDupes;
 $("#btnBulk").onclick = startBulk;
 $("#dClose2").onclick = () => { bulk = null; $("#dupModal").classList.add("hidden"); };
@@ -849,6 +1014,7 @@ restoreState();
 $("#search").value = state.q;
 $("#matchSel").value = state.match;
 $("#wantedSel").value = state.wanted;
+$("#seenSel").value = state.seen;
 $("#onlyMissing").checked = !!state.missing;
 $$("#kindChips .chip").forEach(c => c.classList.toggle("on", (c.dataset.kind || "") === state.kind));
 $$("#watchChips .chip").forEach(c => c.classList.toggle("on", (c.dataset.w || "") === state.watched));

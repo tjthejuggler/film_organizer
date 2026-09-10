@@ -51,6 +51,18 @@ release names when normal TMDB matching fails. Use the **Test TMDB** /
     exact-name so they never collide.
   - *Manual*: the ✓ button overrides the folder rule per title (folder rule
     wins only until you click).
+- **Seen log (watched without owning)** — the **👁 Seen** button records a
+  movie/series you have watched but no longer (or never) own a file of. The
+  add flow checks your catalog first ("Already in your catalog?") and then
+  shows up to six **TMDB candidate cards** (poster, year, synopsis) so you can
+  confirm exactly which title you meant — picking one fetches its details
+  immediately. Without a TMDB key (or for obscure titles) you can still
+  record the entry plain. Entries live in the main catalog (badge **👁 seen**,
+  filter *Seen log only*), count as watched, survive every scan. If a file
+  with the same name later appears on disk, the entry automatically becomes a
+  normal library row — still marked watched. External programs can use
+  `POST /api/history` (accepts `tmdb_id`) / `GET /api/history` /
+  `DELETE /api/history/{id}`.
 - **Watch Next** — pin one movie and one series as "queued to watch" with the
   ▶ button (row or drawer). The title is **copied** into
   `<internal folder>/aaNext_Movie` or `aaNext_Series` (whatever the previous
@@ -107,6 +119,10 @@ Interactive docs at `/api/docs` (FastAPI). Key endpoints:
 | POST | `/api/titles/{id}/move` | move files `{target:"internal"|"external"}` (job) |
 | POST | `/api/titles/{id}/watch-next` | pin as Watch Next: copy into `<internal>/aaNext_Movie|aaNext_Series` (job); 409 names offline drives |
 | DELETE | `/api/titles/{id}/watch-next` | unpin (slot copy stays until the next pin) |
+| POST | `/api/history/search` | seen-log candidate lookup: local catalog matches + up to 6 TMDB candidates with poster/year/synopsis for user confirmation |
+| GET  | `/api/history` | list seen-log entries (watched, no file owned) |
+| POST | `/api/history` | record a seen title `{title, kind?, year?, note?, watched_at?}` — idempotent, auto-enriched; becomes a normal row if files appear |
+| DELETE | `/api/history/{id}` | remove a seen-log entry (fileless rows are deleted; owned rows just lose the flag) |
 | GET  | `/api/wanted` | list the wishlist |
 | POST | `/api/wanted` | **external submit**: `{title, kind:"movie"|"series", year?, note?, by?}` — idempotent, auto-enriched; scanner clears the flag when files appear |
 | DELETE | `/api/wanted/{id}` | un-want (wishlist rows without files are removed) |
@@ -140,6 +156,18 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-10 (6)** — **Seen log confirm flow + UI tweaks**: adding a seen
+  entry now checks the local catalog first, then shows TMDB candidate cards
+  (poster/year/synopsis) to confirm the exact title; the chosen candidate's
+  details are fetched synchronously (`POST /api/history` accepts `tmdb_id`).
+  Replaced the loud red primary add button with a quiet mini button, and the
+  Settings button is now just a ⚙ gear icon.
+- **2026-09-10 (5)** — **Seen log**: record watched movies/series you no longer
+  own as fileless catalog entries (👁 Seen button in the header). New
+  `history` column (auto-migrated), `GET/POST/DELETE /api/history`, a
+  *Seen log only* filter, and a **👁 seen** badge. Entries survive scans
+  (the fileless-row cleanup skips them), clear themselves automatically when
+  matching files appear on disk, and are enriched with poster/ratings.
 - **2026-09-10 (4)** — **Watch Next + row tint + favicon fix**: ▶ Watch Next
   pin (new `watchnext.py`, `POST/DELETE /api/titles/{id}/watch-next`) copies
   the pinned title into `<internal>/aaNext_Movie|aaNext_Series` (wiping the

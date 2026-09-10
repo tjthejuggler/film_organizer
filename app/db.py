@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS titles(
     watched_folder INTEGER DEFAULT 0,
     watched_manual INTEGER,
     watched_at     TEXT,
+    history        INTEGER DEFAULT 0,
     last_seen      TEXT,
     size_bytes     INTEGER DEFAULT 0,
     created_at     TEXT
@@ -134,6 +135,10 @@ def ensure():
         # the top of the list and marks it as the one queued to watch
         if "watch_next" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN watch_next TEXT")
+        # seen-history: rows the user recorded as watched but owns no file
+        # of; the scanner must never prune them (see scan_roots cleanup)
+        if "history" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN history INTEGER DEFAULT 0")
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
         if "created" not in fcols:
             con.execute("ALTER TABLE files ADD COLUMN created REAL")

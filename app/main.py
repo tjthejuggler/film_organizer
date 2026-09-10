@@ -93,6 +93,25 @@ class WantedIn(BaseModel):
     watched: bool = False
 
 
+class HistoryIn(BaseModel):
+    """Manual watch-history entry: seen, but no file is owned anymore."""
+    title: str
+    kind: str = "movie"
+    year: Optional[int] = None
+    note: Optional[str] = None
+    watched_at: Optional[str] = None  # ISO date the user saw it (optional)
+    tmdb_id: Optional[int] = None     # pins the user-confirmed TMDB candidate
+    imdb_id: Optional[str] = None
+
+
+class HistorySearchIn(BaseModel):
+    """Candidate lookup for the seen-log confirm step: checks the local
+    catalog first, then queries TMDB so the user can confirm the match."""
+    title: str
+    kind: str = "movie"
+    year: Optional[int] = None
+
+
 class ExtWatchedIn(BaseModel):
     """External 'this was watched' report (by id or by title)."""
     title: Optional[str] = None
@@ -120,6 +139,7 @@ def _title_payload(row) -> dict:
     d["watched"] = bool(d["watched_manual"]) if d["watched_manual"] is not None \
         else bool(d["watched_folder"])
     d["wanted"] = bool(d.get("wanted"))
+    d["history"] = bool(d.get("history"))
     d["favorite"] = bool(d.get("favorite"))
     d["watch_next"] = d.get("watch_next")  # 'movie' | 'series' | None
     return d
@@ -162,15 +182,16 @@ def favicon():
 
 def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
                    root=None, missing_on=None, cert=None, person=None,
-                   wanted=None):
+                   wanted=None, seen=None):
     """Shared WHERE builder so /api/titles and /api/stats agree exactly."""
     where, params = [], []
     if q:
         # free-text spans identity AND people: "nolan" finds his films
-        where.append("(t.title LIKE ? OR t.original_title LIKE ? OR t.overview LIKE ? "
+        # (overview/description text is deliberately NOT searched)
+        where.append("(t.title LIKE ? OR t.original_title LIKE ? "
                      "OR t.director LIKE ? OR t.creator LIKE ? OR t.stars LIKE ? "
                      "OR t.network LIKE ?)")
-        params += [f"%{q}%"] * 7
+        params += [f"%{q}%"] * 6
     if person:
         where.append("(t.director LIKE ? OR t.creator LIKE ? OR t.stars LIKE ?)")
         params += [f"%{person}%"] * 3
@@ -201,6 +222,8 @@ def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
     if cert:
         where.append("t.cert=?")
         params.append(cert)
+    if seen == "history":
+        where.append("t.history=1")
     return where, params
 
 
@@ -210,12 +233,12 @@ def list_titles(
     q: str = None, kind: str = None, watched: str = None,
     match: str = None, genre: str = None,
     root: str = None, missing_on: str = None, cert: str = None,
-    person: str = None, wanted: str = None,
+    person: str = None, wanted: str = None, seen: str = None,
     sort: str = "title", direction: str = "asc",
     limit: int = 10000, offset: int = 0,
 ):
     where, params = _filter_clause(q, kind, watched, match, genre,
-                                   root, missing_on, cert, person, wanted)
+                                   root, missing_on, cert, person, wanted, seen)
 
     ORDER = {
         "title": "t.title COLLATE NOCASE", "year": "t.year",
@@ -397,6 +420,127 @@ def set_wanted(tid: int, body: FlagIn):
     with db.tx() as c:
         c.execute("UPDATE titles SET wanted=? WHERE id=?", (1 if body.value else 0, tid))
     return {"ok": True, "wanted": body.value}
+
+
+@app.get("/api/history")
+def list_history():
+    """All seen-history entries (watched titles we no longer own)."""
+    rows = db.q("SELECT * FROM titles WHERE history=1 ORDER BY title COLLATE NOCASE")
+    return {"history": [_title_payload(r) for r in rows]}
+
+
+@app.post("/api/history/search")
+def search_history_candidates(body: HistorySearchIn):
+    """Pre-add lookup: (1) rows already in the catalog (any flag), then
+    (2) up to 6 TMDB candidates with poster/year/overview so the user can
+    confirm what they watched before anything is written."""
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, "title required")
+
+    # 1) local catalog matches (exact dedupe key + fuzzy title contains)
+    from .scanner import dedupe_key
+    local = []
+    exact = db.q1("SELECT * FROM titles WHERE dedupe_key=?",
+                  (dedupe_key(body.kind, title, body.year),))
+    if exact:
+        local.append(_title_payload(exact))
+    else:
+        for r in db.q(
+            "SELECT * FROM titles WHERE kind=? AND title LIKE ? LIMIT 5",
+            (body.kind, f"%{title}%"),
+        ):
+            local.append(_title_payload(r))
+
+    # 2) TMDB candidates (posters + overview for the confirm cards)
+    tmdb_candidates, tmdb_error = [], None
+    if tmdb.enabled():
+        try:
+            cands = (tmdb.search_tv(title, body.year) if body.kind == "series"
+                     else tmdb.search_movie(title, body.year))
+            cands = [c for c in cands if c.get("name")]
+            cands.sort(key=lambda c: (c.get("score", 0), c.get("popularity", 0)),
+                       reverse=True)
+            for c in cands[:6]:
+                tmdb_candidates.append({
+                    "tmdb_id": c["id"], "name": c["name"],
+                    "year": (c.get("date") or "")[:4] or None,
+                    "poster": c.get("poster"),
+                    "overview": c.get("overview"),
+                    "score": c.get("score", 0),
+                })
+        except Exception as e:
+            tmdb_error = str(e)[:200]
+    else:
+        tmdb_error = "no TMDB key configured (add one in Settings)"
+
+    return {"local": local, "tmdb": tmdb_candidates, "tmdb_error": tmdb_error}
+
+
+@app.post("/api/history")
+def add_history(body: HistoryIn):
+    """Record a movie/series as seen WITHOUT owning a file — pure watch log.
+    Idempotent per title+kind+year: re-adding refreshes the note/date. If a
+    matching catalog row already exists it is simply flagged history=1; the
+    row then keeps working normally if its files ever come back (history is
+    cleared by the scanner when files appear)."""
+    if body.kind not in ("movie", "series"):
+        raise HTTPException(400, "kind must be 'movie' or 'series'")
+    from .scanner import dedupe_key
+    from .jobs import now_iso
+    key = dedupe_key(body.kind, body.title, body.year)
+    watched_at = body.watched_at or now_iso()
+    existing = db.q1("SELECT * FROM titles WHERE dedupe_key=?", (key,))
+    if existing:
+        tid = existing["id"]
+        with db.tx() as c:
+            c.execute(
+                "UPDATE titles SET history=1, watched_manual=1, watched_at=?, "
+                "wanted_note=COALESCE(?, wanted_note) WHERE id=?",
+                (watched_at, body.note, tid))
+    else:
+        with db.tx() as c:
+            c.execute(
+                """INSERT INTO titles(dedupe_key, kind, title, year, match_status,
+                   history, wanted, watched_manual, watched_at, cataloged_at, wanted_note,
+                   tmdb_id, imdb_id)
+                   VALUES(?,?,?,?,'unmatched',1,0,1,?,?,?,?,?)""",
+                (key, body.kind, body.title, body.year, watched_at,
+                 now_iso(), body.note, body.tmdb_id, body.imdb_id))
+        tid = db.q1("SELECT id FROM titles WHERE dedupe_key=?", (key,))["id"]
+    # enrichment: when the user confirmed a specific TMDB candidate, fetch
+    # THAT one synchronously (fast, and no risk of the auto-matcher picking
+    # a different title); otherwise fall back to the background auto-enrich
+    if body.tmdb_id:
+        try:
+            row = _get_title_or_404(tid)
+            if body.tmdb_id != row["tmdb_id"] or row["match_status"] != "matched":
+                detail = (tmdb.tv_detail(body.tmdb_id) if body.kind == "series"
+                          else tmdb.movie_detail(body.tmdb_id))
+                enrich._apply(tid, detail, "tmdb")
+        except Exception:
+            pass  # never fail the add over enrichment; auto-enrich may retry
+    else:
+        try:
+            jid = jobs.create("enrich", total=1)
+            jobs.run_background(jid, lambda j: enrich.run_enrich(j, title_ids=[tid]))
+        except Exception:
+            pass  # enrichment is optional; the entry is already stored
+    return {"ok": True, "id": tid}
+
+
+@app.delete("/api/history/{tid}")
+def remove_history(tid: int):
+    """Drop a seen-history entry. Entries WITHOUT files are deleted entirely;
+    entries that turned out to also exist on disk just lose the flag."""
+    _get_title_or_404(tid)
+    has_files = db.q1("SELECT 1 FROM files WHERE title_id=? AND missing=0 LIMIT 1", (tid,))
+    with db.tx() as c:
+        if has_files:
+            c.execute("UPDATE titles SET history=0 WHERE id=?", (tid,))
+        else:
+            c.execute("DELETE FROM titles WHERE id=?", (tid,))
+    return {"ok": True, "removed": not bool(has_files)}
 
 
 # ---- external program API (submit wanted / report watched) -----------------
@@ -887,12 +1031,12 @@ def stats(
     q: str = None, kind: str = None, watched: str = None,
     match: str = None, genre: str = None,
     root: str = None, missing_on: str = None, cert: str = None,
-    person: str = None, wanted: str = None,
+    person: str = None, wanted: str = None, seen: str = None,
 ):
     """Counts reflect the CURRENT FILTER (same params as /api/titles),
     with a watched/unwatched breakdown of the filtered set."""
     where, params = _filter_clause(q, kind, watched, match, genre,
-                                   root, missing_on, cert, person, wanted)
+                                   root, missing_on, cert, person, wanted, seen)
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     r = db.q1(
         f"""SELECT COUNT(*) n,

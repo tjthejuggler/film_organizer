@@ -216,7 +216,7 @@ def scan_roots(job_id: str, roots: list):
 
     with tx() as c:
         for g in groups.values():
-            row = q1("SELECT id, watched_folder, watched_at, wanted FROM titles WHERE dedupe_key=?", (g["key"],))
+            row = q1("SELECT id, watched_folder, watched_at, wanted, history FROM titles WHERE dedupe_key=?", (g["key"],))
             if row is None:
                 c.execute(
                     """INSERT INTO titles(dedupe_key, kind, title, year, cataloged_at,
@@ -294,11 +294,16 @@ def scan_roots(job_id: str, roots: list):
             # the wanted flag flips off. A manually-wanted owned title keeps
             # its flag (had_files was already true before this scan).
             adopt = 1 if (was_wanted and not had_files and size > 0) else 0
+            # A seen-history row that gained files is owned again: the
+            # history flag clears but the watched state is kept (nw latch).
+            owned_again = 1 if (row["history"] and size > 0) else 0
             c.execute(
                 """UPDATE titles SET last_seen=?, size_bytes=?, seasons=?,
                    episode_count=?, watched_folder=?, watched_at=?,
-                   wanted=CASE WHEN ? THEN 0 ELSE wanted END WHERE id=?""",
-                (scan_started, size, n_seasons or None, n_eps, nw, new_wat, adopt, tid),
+                   wanted=CASE WHEN ? THEN 0 ELSE wanted END,
+                   history=CASE WHEN ? THEN 0 ELSE history END WHERE id=?""",
+                (scan_started, size, n_seasons or None, n_eps, nw, new_wat,
+                 adopt, owned_again, tid),
             )
             if adopt:
                 from .jobs import log
@@ -311,8 +316,10 @@ def scan_roots(job_id: str, roots: list):
                 (scan_started, root, root + os.sep + "%"),
             )
         # drop titles that no longer have any files — but keep WISHLIST rows:
-        # a wanted title has no files by design until it is acquired
-        c.execute("DELETE FROM titles WHERE wanted=0 AND id NOT IN (SELECT DISTINCT title_id FROM files)")
+        # a wanted title has no files by design until it is acquired.
+        # history=1 rows are the seen log (watched titles we no longer own
+        # a file of) — pure records, they must survive the cleanup too
+        c.execute("DELETE FROM titles WHERE wanted=0 AND history=0 AND id NOT IN (SELECT DISTINCT title_id FROM files)")
 
     update(job_id, progress=total, message=f"Done: {len(groups)} titles, {done} files")
     log(job_id, "Scan complete.")
