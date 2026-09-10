@@ -8,9 +8,16 @@ anything when you want to watch it.
 ## Run
 
 ```bash
-./run.sh
-# then open http://127.0.0.1:8765
+./launch_film_organizer.sh
 ```
+
+Starts the server if it isn't running yet, then opens
+<http://127.0.0.1:8765> in your browser. Safe to run again while the app
+is up (it just re-opens the UI). The plain server starter is still
+available as `./run.sh`.
+
+This launcher is registered in the **MyApps** tray launcher
+(`~/Projects/MyApps/script_items.json`) with the clapperboard icon.
 
 First run creates a venv, installs deps, seeds the default library roots
 (`~/Videos`, `~/Downloads`) and starts the server. Roots are configurable
@@ -44,6 +51,13 @@ release names when normal TMDB matching fails. Use the **Test TMDB** /
     exact-name so they never collide.
   - *Manual*: the ✓ button overrides the folder rule per title (folder rule
     wins only until you click).
+- **Watch Next** — pin one movie and one series as "queued to watch" with the
+  ▶ button (row or drawer). The title is **copied** into
+  `<internal folder>/aaNext_Movie` or `aaNext_Series` (whatever the previous
+  pin left there is wiped), and it **sticks to the top of the list** no
+  matter how you sort or filter. If the title lives on an unplugged drive
+  you get told exactly which drive to connect — nothing is copied until it
+  is reachable. Unpinning leaves the copy in place; the next pin replaces it.
 - **date cataloged** — every title records when the system first cataloged it
   (sortable column).
 - **Description toggle** — the detail drawer hides the synopsis behind a
@@ -91,6 +105,8 @@ Interactive docs at `/api/docs` (FastAPI). Key endpoints:
 | POST | `/api/titles/{id}/favorite` | favorite toggle `{value:bool}` |
 | POST | `/api/titles/{id}/wanted` | wanted toggle on existing row `{value:bool}` |
 | POST | `/api/titles/{id}/move` | move files `{target:"internal"|"external"}` (job) |
+| POST | `/api/titles/{id}/watch-next` | pin as Watch Next: copy into `<internal>/aaNext_Movie|aaNext_Series` (job); 409 names offline drives |
+| DELETE | `/api/titles/{id}/watch-next` | unpin (slot copy stays until the next pin) |
 | GET  | `/api/wanted` | list the wishlist |
 | POST | `/api/wanted` | **external submit**: `{title, kind:"movie"|"series", year?, note?, by?}` — idempotent, auto-enriched; scanner clears the flag when files appear |
 | DELETE | `/api/wanted/{id}` | un-want (wishlist rows without files are removed) |
@@ -116,6 +132,7 @@ app/
   llm.py      OpenAI-compatible name cleanup
   enrich.py   enrichment pipeline
   jobs.py     background job tracking
+  watchnext.py Watch Next pin: copy into aaNext_* slot + replace
   main.py     FastAPI routes + static mount
 static/       index.html, app.js, style.css
 data/         SQLite DB (gitignored)
@@ -123,6 +140,22 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-10 (4)** — **Watch Next + row tint + favicon fix**: ▶ Watch Next
+  pin (new `watchnext.py`, `POST/DELETE /api/titles/{id}/watch-next`) copies
+  the pinned title into `<internal>/aaNext_Movie|aaNext_Series` (wiping the
+  previous pin's copy) and sticks it to the top of the list across all
+  sorts/filters; offline source drives are refused with a 409 naming the
+  drive to connect. Rows are no longer dimmed for watched/offline — every
+  row is full-brightness white; titles with at least one connected location
+  get a green-tinted row background + green edge. Favicon is served with
+  `Cache-Control: no-store` and the link tag is versioned, so the tab icon
+  finally updates after the clapperboard redesign.
+- **2026-09-10 (3)** — **new icon + MyApps launcher entry**: replaced the
+  YouTube-like red play-button favicon with a purple-gradient clapperboard
+  (`static/favicon.svg`, also inlined in the header); added
+  `launch_film_organizer.sh` (starts the server if needed, opens the UI,
+  idempotent) and registered "Film Organizer" with the new icon in
+  `~/Projects/MyApps/script_items.json`.
 - **2026-09-10 (2)** — **live drive events + remembered filters**: the table
   now reloads by itself when a drive is connected/disconnected (server-sent
   events on `/api/events/drives` watch `/proc/mounts` + per-root liveness, 2 s

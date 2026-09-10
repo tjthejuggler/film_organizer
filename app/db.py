@@ -130,6 +130,10 @@ def ensure():
         # per-field user-edit locks: enrich skips fields listed here
         if "manual_edits" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN manual_edits TEXT DEFAULT '[]'")
+        # watch-next pin: NULL | 'movie' | 'series' — sticks the title to
+        # the top of the list and marks it as the one queued to watch
+        if "watch_next" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN watch_next TEXT")
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
         if "created" not in fcols:
             con.execute("ALTER TABLE files ADD COLUMN created REAL")

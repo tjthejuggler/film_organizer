@@ -15,6 +15,13 @@ DEFAULT_ROOTS = [
     os.path.expanduser("~/Downloads"),
 ]
 
+# Watch Next staging folders: a COPY of the pinned title lives here
+# (inside internal_root); setting a new pin wipes the previous one.
+WATCH_NEXT_DIRS = {
+    "movie": "aaNext_Movie",
+    "series": "aaNext_Series",
+}
+
 # z.ai (Zhipu) OpenAI-compatible endpoint + GLM flash model
 DEFAULT_SETTINGS = {
     "llm_base_url": "https://api.z.ai/api/paas/v4",

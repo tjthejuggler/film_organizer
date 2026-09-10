@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, duplicates, enrich, jobs, llm, mover, scanner, tmdb
+from . import config, db, duplicates, enrich, jobs, llm, mover, scanner, tmdb, watchnext
 
 db.init()
 
@@ -27,7 +27,8 @@ async def no_stale_static(request, call_next):
     resp = await call_next(request)
     if request.url.path.startswith("/api"):
         resp.headers["Cache-Control"] = "no-store"
-    else:
+    elif "cache-control" not in resp.headers:
+        # routes may set a stronger policy themselves (favicon: no-store)
         resp.headers["Cache-Control"] = "no-cache"
     return resp
 
@@ -120,6 +121,7 @@ def _title_payload(row) -> dict:
         else bool(d["watched_folder"])
     d["wanted"] = bool(d.get("wanted"))
     d["favorite"] = bool(d.get("favorite"))
+    d["watch_next"] = d.get("watch_next")  # 'movie' | 'series' | None
     return d
 
 
@@ -150,9 +152,12 @@ def index():
 
 @app.get("/favicon.ico")
 def favicon():
+    # no-store: browsers otherwise pin the tab icon per origin for weeks,
+    # surviving tab closes and server restarts
     path = os.path.join(config.STATIC_DIR, "favicon.svg")
-    return FileResponse(path, media_type="image/svg+xml") if os.path.exists(path) \
-        else JSONResponse({}, status_code=204)
+    return FileResponse(path, media_type="image/svg+xml",
+                        headers={"Cache-Control": "no-store"}) \
+        if os.path.exists(path) else JSONResponse({}, status_code=204)
 
 
 def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
@@ -229,7 +234,8 @@ def list_titles(
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     rows = db.q(
         f"""SELECT t.* FROM titles t{wsql}
-            ORDER BY {order} {direction}, t.title COLLATE NOCASE
+            ORDER BY (t.watch_next IS NOT NULL) DESC,
+                     {order} {direction}, t.title COLLATE NOCASE
             LIMIT ? OFFSET ?""",
         params + [limit, offset],
     )
@@ -505,6 +511,8 @@ def delete_title(tid: int):
     _get_title_or_404(tid)
     with db.tx() as c:
         c.execute("DELETE FROM titles WHERE id=?", (tid,))
+    # the pin's slot copy still exists on disk but no row pins it anymore —
+    # setting a new Watch Next will wipe the slot as usual
     return {"ok": True}
 
 
@@ -693,6 +701,47 @@ def move_title(tid: int, body: MoveIn):
 
     threading.Thread(target=_run, args=(jid,), daemon=True).start()
     return {"job_id": jid}
+
+
+# ---- watch next (pin to top + copy into the aaNext_* slot) -----------------
+@app.post("/api/titles/{tid}/watch-next")
+def set_watch_next(tid: int):
+    """Pin a title as Watch Next: copies its files into
+    <internal>/aaNext_Movie|aaNext_Series, wiping the previous pin's copy,
+    and sticks it to the top of the list no matter the sort."""
+    title = _get_title_or_404(tid)
+    # fail before any copying when a needed source drive is offline —
+    # the error names the drive so the user knows what to plug in
+    offline = watchnext.offline_roots(tid)
+    if offline:
+        raise HTTPException(
+            409, "Connect this drive first to set Watch Next: "
+            + ", ".join(sorted(offline)))
+    try:
+        watchnext.slot_dir(title["kind"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    jid = jobs.create("watchnext", total=0)
+    jobs.log(jid, f"Watch Next requested: title {tid}")
+
+    def _run(job):
+        error = None
+        try:
+            watchnext.set_next(job, tid)
+        except Exception as e:
+            jobs.log(job, f"FAILED: {e}")
+            error = str(e)
+        jobs.finish(job, error=error)
+
+    threading.Thread(target=_run, args=(jid,), daemon=True).start()
+    return {"job_id": jid}
+
+
+@app.delete("/api/titles/{tid}/watch-next")
+def clear_watch_next(tid: int):
+    _get_title_or_404(tid)
+    watchnext.clear_next(tid)
+    return {"ok": True}
 
 
 # ---- duplicates ------------------------------------------------------------

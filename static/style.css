@@ -69,11 +69,17 @@ th.c, td.c { text-align: center; }
 th.r, td.r { text-align: right; }
 tbody tr { border-bottom: 1px solid #1a2030; cursor: pointer; }
 tbody tr:hover { background: var(--panel); }
-tbody tr.watched { opacity: .55; }
-/* title lives only on disconnected drive(s): dim the whole row + amber edge */
-tbody tr.is-offline { opacity: .45; }
+/* every row stays full-brightness white text; rows whose title has at
+   least one connected location get a green tint (ready to watch now) */
+tbody tr.is-online { background: rgba(46, 204, 113, .09); }
+tbody tr.is-online:hover { background: rgba(46, 204, 113, .14); }
+tbody tr.is-online td:first-child { box-shadow: inset 2px 0 0 var(--ok); }
+/* title lives only on disconnected drive(s): amber edge (no dimming) */
 tbody tr.is-offline td:first-child { box-shadow: inset 2px 0 0 var(--warn); }
-.badge.offline { color: var(--warn); border-color: var(--warn); }
+/* pinned as Watch Next: sticks to the top of the list */
+tr.is-next .tname::after { content: " ▶"; color: var(--ok); font-size: .8em; }
+tr.is-next td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
+tr.is-next.is-online td:first-child { box-shadow: inset 3px 0 0 #ffd479; }
 td { padding: 8px; vertical-align: top; }
 .tcell { display: flex; gap: 10px; align-items: flex-start; }
 .thumb {
@@ -119,6 +125,8 @@ td.actions .wbtn { margin-left: 4px; }
   flex: none; transition: transform .1s ease, background .15s ease;
 }
 .wbtn:hover { transform: scale(1.12); }
+.wbtn.next.on { background: #2c5f8a; border-color: #2c5f8a; color: #fff; }
+.wbtn.next.on.watched { background: var(--line); border-color: var(--line); color: var(--dim); }
 .wbtn.on { background: var(--ok); border-color: var(--ok); color: #04150a; }
 .wbtn.fav.on { background: #e91e63; border-color: #e91e63; color: #fff; }
 
@@ -128,6 +136,8 @@ td.actions .wbtn { margin-left: 4px; }
 }
 .person:hover { color: #7eb8ff; border-bottom-color: #7eb8ff; }
 
+/* watch next pin */
+.badge.next { color: #7ef0b2; border-color: #2e7d52; background: rgba(46,204,113,.10); }
 /* wanted wishlist */
 .badge.wanted { color: #ffcf5c; border-color: #8a6d1f; background: rgba(255,207,92,.08); }
 tr.is-wanted .tname::after { content: " ★"; color: #ffcf5c; font-size: .8em; }

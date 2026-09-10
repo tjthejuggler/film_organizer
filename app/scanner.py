@@ -24,6 +24,9 @@ CONTAINER_NAMES = {
     "films", "film", "videos", "video", "downloads", "download", "new",
     "aanew", "unsorted", "miniseries", "aaminiseries", "aaseries",
     "documentaries", "docs", "anime", "courses", "music", "other", "root",
+    # Watch Next staging slots: never title anchors (same aa* convention
+    # as aanew / aaseries)
+    "aanextmovie", "aanextseries",
 }
 
 LEADING_EP_RE = parser.re.compile(r"^\D{0,4}?(\d{1,3})\b")

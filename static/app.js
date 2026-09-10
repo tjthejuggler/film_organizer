@@ -143,20 +143,25 @@ function renderRows() {
       `<span class="badge genre">${esc(g)}</span>`).join("");
     const wantedBadge = t.wanted ? '<span class="badge wanted" title="On the wishlist — submitted via API or toggled here">★ wanted</span>' : "";
     // a title is OFFLINE when every location it lives on is currently
-    // disconnected (e.g. its only copy sits on an unplugged drive)
+    // disconnected (e.g. its only copy sits on an unplugged drive);
+    // ONLINE when at least one location is connected (ready to watch)
     const offlineSet = t.offline_locations || [];
     const allOff = (t.locations || []).length > 0 &&
       (t.locations || []).every(l => offlineSet.includes(l));
-    const offlineBadge = allOff
-      ? '<span class="badge offline" title="None of this title\'s drives are currently connected">⚠ offline</span>' : "";
-    return `<tr data-id="${t.id}" class="${watched ? "watched" : ""}${t.wanted ? " is-wanted" : ""}${allOff ? " is-offline" : ""}">
+    const isOnline = (t.locations || []).length > 0 && !allOff;
+    const isNext = !!t.watch_next;
+    // offline is signaled by the amber row edge + amber "Where" chips —
+    // a dedicated badge just cluttered the title line
+    const nextBadge = isNext
+      ? '<span class="badge next" title="Pinned as Watch Next — copy sits in the aaNext folder inside the internal storage">▶ next</span>' : "";
+    return `<tr data-id="${t.id}" class="${isNext ? "is-next" : ""}${isOnline ? " is-online" : ""}${t.wanted ? " is-wanted" : ""}${allOff ? " is-offline" : ""}">
       <td><div class="tcell">
         ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
                    : `<div class="thumb ph">🎬</div>`}
         <div>
           <div class="tname">${esc(t.title)}</div>
           <div style="margin-top:3px">
-            <span class="badge ${t.kind}">${t.kind}</span>${offlineBadge}${wantedBadge}${matchBadge}
+            <span class="badge ${t.kind}">${t.kind}</span>${nextBadge}${wantedBadge}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
             ${genreTags}
           </div>
@@ -177,6 +182,8 @@ function renderRows() {
       <td class="actions">
         <button class="wbtn fav ${t.favorite ? "on" : ""}" data-fav="${t.id}"
           title="${t.favorite ? "Remove from favorites" : "Mark as favorite"}">♥</button>
+        <button class="wbtn next ${isNext ? "on" : ""}${watched ? " watched" : ""}" data-next="${t.id}"
+          title="${isNext ? "Unpin from Watch Next" : "Set as Watch Next — copies it to the aaNext folder on internal storage and pins it to the top"}">▶</button>
         <button class="wbtn ${watched ? "on" : ""}" data-watched="${t.id}"
           title="${watched ? "Mark unwatched" : "Mark watched"}">✓</button>
         <button class="wbtn del" data-deltitle="${t.id}" data-name="${esc(t.title)}"
@@ -221,8 +228,31 @@ function searchPerson(name) {
   load();
 }
 
-/* ---------- watched toggle + delete + row click (delegation) ---------- */
+/* ---------- watched toggle + watch-next + delete + row click (delegation) ---------- */
 document.addEventListener("click", async e => {
+  const nbtn = e.target.closest("[data-next]");
+  if (nbtn) {
+    e.stopPropagation();
+    const id = nbtn.dataset.next;
+    const t = state.titles.find(x => String(x.id) === String(id));
+    nbtn.disabled = true;
+    try {
+      if (t.watch_next) {
+        await api(`/api/titles/${id}/watch-next`, { method: "DELETE" });
+        t.watch_next = null;
+        renderRows();
+      } else {
+        const r = await api(`/api/titles/${id}/watch-next`, { method: "POST" });
+        watchJob(r.job_id, `Watch Next — ${t.title}`);
+        load();
+      }
+    } catch (err) {
+      // 409 names the drive to connect; 400 explains missing settings
+      alert(err.message);
+    }
+    nbtn.disabled = false;
+    return;
+  }
   const wbtn = e.target.closest("[data-watched]");
   if (wbtn) {
     e.stopPropagation();
@@ -312,6 +342,8 @@ async function openDrawer(id) {
       <button class="btn mini ${t.favorite ? "primary" : ""}" id="dFav">${t.favorite ? "♥ Favorite" : "♡ Favorite"}</button>
       <button class="btn mini ${t.wanted ? "primary" : ""}" id="dWanted">${t.wanted ? "★ Wanted" : "☆ Not wanted"}</button>
       <button class="btn mini" id="dWatch">${t.watched ? "✓ Watched" : "Mark watched"}</button>
+      <button class="btn mini ${t.watch_next ? "primary" : ""}" id="dNext"
+        title="Copies the files into the aaNext folder on internal storage and pins this title to the top of the list">${t.watch_next ? "▶ Watch Next ✓" : "▶ Set Watch Next"}</button>
     </div>
     ${(t.genres || []).map(g => `<span class="badge genre">${esc(g)}</span>`).join(" ")}
     ${t.cert ? `<span class="cert" title="Content rating">${esc(t.cert)}</span>` : ""}
@@ -392,6 +424,18 @@ async function openDrawer(id) {
   $("#dWanted").onclick = async () => {
     await api(`/api/titles/${id}/wanted`, { method: "POST", body: { value: !t.wanted } });
     openDrawer(id); load();
+  };
+  $("#dNext").onclick = async () => {
+    try {
+      if (t.watch_next) {
+        await api(`/api/titles/${id}/watch-next`, { method: "DELETE" });
+        openDrawer(id); load();
+      } else {
+        const r = await api(`/api/titles/${id}/watch-next`, { method: "POST" });
+        watchJob(r.job_id, `Watch Next — ${t.title}`);
+        load();
+      }
+    } catch (err) { alert(err.message); }
   };
   const doMove = async target => {
     const label = target === "internal" ? "internal" : "external";
