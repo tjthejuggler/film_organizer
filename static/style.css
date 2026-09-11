@@ -145,6 +145,9 @@ tr.is-wanted .thumb.ph::before { content: "🔎"; }
 /* seen log (watched, no file owned) */
 .badge.seen { color: #c9b8ff; border-color: #5b4a8f; background: rgba(158,130,255,.08); }
 tr.is-history .tname { opacity: .82; }
+/* season calendar chips: upcoming season / finished */
+.badge.cal { color: #8fd4ff; border-color: #25629a; background: rgba(56,142,255,.10); }
+.badge.finished { color: #b9e4c9; border-color: #3f7354; background: rgba(80,200,120,.08); }
 tr.is-history .thumb.ph::before { content: "👁"; }
 
 /* seen-log modal */
@@ -370,6 +373,15 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 .notifitem .nactions { display: flex; gap: 8px; align-items: center; }
 .notifitem .nerr { color: var(--warn); font-size: 12px; margin-top: 6px; }
 .notifdone { font-size: 12.5px; color: var(--dim); padding: 6px 4px; text-align: center; }
+/* season calendar popup (uses the notifpanel shell) */
+.calpanel { width: 440px; }
+.calitem { cursor: pointer; }
+.calitem.cal-vague { opacity: .85; }
+.calitem.cal-done { opacity: .55; }
+.calitem .nmeta b { color: var(--text); }
+.calfoot {
+  font-size: 11.5px; color: var(--dim); text-align: center; padding-top: 4px;
+}
 
 /* toast */
 .toast {

@@ -155,6 +155,11 @@ function renderRows() {
       `<span class="badge genre">${esc(g)}</span>`).join("");
     const wantedBadge = t.wanted ? '<span class="badge wanted" title="On the wishlist — submitted via API or toggled here">★ wanted</span>' : "";
     const seenBadge = t.history ? '<span class="badge seen" title="Seen log — watched but no file owned">👁 seen</span>' : "";
+    // season calendar chips: upcoming season announced/vague, or finished
+    const calUpcoming = t.season_upcoming
+      ? `<span class="badge cal" title="Next season on the season calendar (📅 in the top bar)">${esc(t.season_upcoming)}</span>` : "";
+    const calFinished = t.season_finished
+      ? '<span class="badge finished" title="Series finished — the finale has aired">🏁 finished</span>' : "";
     // a title is OFFLINE when every location it lives on is currently
     // disconnected (e.g. its only copy sits on an unplugged drive);
     // ONLINE when at least one location is connected (ready to watch)
@@ -174,7 +179,7 @@ function renderRows() {
         <div>
           <div class="tname">${esc(t.title)}</div>
           <div style="margin-top:3px">
-            <span class="badge ${t.kind}${t.is_miniseries ? " mini" : ""}" title="${kindTitle}">${kindLabel}</span>${nextBadge}${wantedBadge}${seenBadge}${matchBadge}
+            <span class="badge ${t.kind}${t.is_miniseries ? " mini" : ""}" title="${kindTitle}">${kindLabel}</span>${nextBadge}${wantedBadge}${seenBadge}${calUpcoming}${calFinished}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
             ${genreTags}
           </div>
@@ -1250,6 +1255,104 @@ $("#recModal").addEventListener("click", e => {
   if (e.target === $("#recModal")) $("#recModal").classList.add("hidden");
 });
 
+/* ---------- season calendar (upcoming seasons of watched series) ---------- */
+function fmtCalDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${d} ${months[(m || 1) - 1]} ${y}`;
+}
+
+function calWhen(e) {
+  if (e.status === "announced" && e.release_start) {
+    const start = fmtCalDate(e.release_start);
+    if (e.release_end && e.release_end !== e.release_start)
+      return `${start} → ${fmtCalDate(e.release_end)}`;
+    return start;
+  }
+  return e.window_hint || "date TBA";
+}
+
+function calPattern(e) {
+  if (e.status === "done" || e.finished) return "series finished";
+  if (e.release_kind === "all_at_once") return "all at once";
+  if (e.release_kind === "weekly") return "weekly episodes";
+  return "";
+}
+
+function renderCalItem(e) {
+  const when = calWhen(e);
+  const pattern = calPattern(e);
+  const days = (e.status === "announced" && typeof e.days_until === "number")
+    ? (e.days_until === 0 ? "today" : e.days_until < 0 ? "airing/ended"
+       : `in ${e.days_until} day${e.days_until === 1 ? "" : "s"}`) : "";
+  const poster = e.poster
+    ? `<img class="thumb" loading="lazy" src="${esc(e.poster)}">`
+    : `<div class="thumb ph">🎬</div>`;
+  return `<div class="notifitem calitem cal-${esc(e.status)}" data-open-title="${e.title_id}">
+    <div class="ntop">
+      ${poster}
+      <div>
+        <div class="ntitle">${esc(e.title)}</div>
+        <div class="nmeta">S${e.season} · <b>${esc(when)}</b>
+          ${pattern ? `· ${esc(pattern)}` : ""}${days ? ` · ${esc(days)}` : ""}</div>
+        ${e.note ? `<div class="nmeta dim">${esc(e.note)}</div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+async function toggleCalPanel() {
+  const panel = $("#calPanel");
+  if (!panel.classList.contains("hidden")) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  panel.innerHTML = '<div class="notifdone">Loading…</div>';
+  const { entries } = await api("/api/seasons/calendar");
+  const open = entries.filter(e => e.status !== "done");
+  const done = entries.filter(e => e.status === "done" || e.finished);
+  panel.innerHTML = open.length || done.length
+    ? (open.length ? '<div class="notifhead">Upcoming seasons</div>'
+       + open.map(renderCalItem).join("") : "")
+      + (done.length ? '<div class="notifhead" style="margin-top:6px">Finished</div>'
+       + done.map(renderCalItem).join("") : "")
+      + `<div class="calfoot">Every watched series is re-checked once a week ·
+         <button class="btn mini ghost" id="calPoll">check all now</button></div>`
+    : '<div class="notifdone">No seasons tracked yet — mark a series watched and it gets checked.</div>';
+  const pollBtn = $("#calPoll");
+  if (pollBtn) pollBtn.onclick = async () => {
+    pollBtn.disabled = true; pollBtn.textContent = "checking…";
+    try { await api("/api/seasons/poll", { method: "POST" }); } catch (e) {}
+    setTimeout(toggleCalPanel, 1500); // reopen = refresh
+  };
+}
+
+$("#btnCalendar").onclick = () => toggleCalPanel().catch(err => alert(err.message));
+document.addEventListener("click", e => {
+  // click-outside closes the calendar panel (its own clicks keep it open)
+  if (!e.target.closest("#btnCalendar") && !e.target.closest("#calPanel"))
+    $("#calPanel").classList.add("hidden");
+});
+$("#calPanel").addEventListener("click", e => {
+  const t = e.target.closest("[data-open-title]");
+  if (t && t.dataset.openTitle) {
+    $("#calPanel").classList.add("hidden");
+    openDrawer(Number(t.dataset.openTitle));
+  }
+});
+
+async function refreshCalPill() {
+  try {
+    const { entries } = await api("/api/seasons/calendar");
+    const n = entries.filter(e => e.status === "announced").length;
+    const pill = $("#calCount");
+    pill.textContent = n > 9 ? "9+" : n;
+    pill.classList.toggle("hidden", n === 0);
+  } catch (e) { /* non-fatal */ }
+}
+
 /* ---------- notifications (watched -> backup decisions) ---------- */
 async function refreshBellPill() {
   try {
@@ -1353,7 +1456,7 @@ function watchDrives() {
       clearTimeout(driveReloadTimer);
       // debounce: a single plug/unplug can emit several signature flips
       driveReloadTimer = setTimeout(() => {
-        load(); renderRootOptions(); refreshBellPill();
+        load(); renderRootOptions(); refreshBellPill(); refreshCalPill();
         refreshDriveQueue(); // a queue entry may have just become runnable
       }, 400);
     };
@@ -1381,3 +1484,4 @@ renderRootOptions() // sets #rootSel to state.root once options exist
 watchDrives();
 refreshRecPill(); // show how many recommendations are waiting
 refreshBellPill(); // show pending watched->backup decisions
+refreshCalPill(); // show how many announced upcoming seasons are on the calendar

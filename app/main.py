@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, drivequeue, duplicates, enrich, jobs, llm, mover, notifications, recommender, scanner, tmdb, watchnext
+from . import config, db, drivequeue, duplicates, enrich, jobs, llm, mover, notifications, recommender, scanner, seasons, tmdb, watchnext
 
 db.init()
 
@@ -27,6 +27,15 @@ def _startup_refill():
         recommender.maybe_refill("startup")
     except Exception:
         pass  # never block boot over recommendations
+    # season calendar: seed once (web-researched facts), then poll weekly
+    try:
+        if not db.q1("SELECT 1 FROM season_watch LIMIT 1"):
+            jid = jobs.create("season_poll", total=0)
+            jobs.log(jid, "first boot: loading web-researched season seeds")
+            threading.Thread(target=seasons.seed, args=(jid,), daemon=True).start()
+        seasons.maybe_poll_weekly()
+    except Exception:
+        pass  # the season calendar must never block boot
     # drive-queue worker: runs queued moves/deletes whenever their drive
     # gets connected — also drains anything queued while the app was off
     threading.Thread(target=drivequeue.worker_loop, daemon=True).start()
@@ -299,6 +308,16 @@ def list_titles(
         for g in (json.loads(r["genres"] or "[]"))
     } | {"Miniseries"})
     out = [_title_payload(r) for r in rows]
+    # season-calendar badges: upcoming-season / finished chips under the name
+    try:
+        flags = seasons.flags_for_titles([t["id"] for t in out])
+        for t in out:
+            f = flags.get(t["id"])
+            if f:
+                t["season_upcoming"] = f["upcoming"]
+                t["season_finished"] = f["finished"]
+    except Exception:
+        pass  # badges are cosmetic — never fail the list over them
     # live drive connectivity: isdir per distinct location (cached per request)
     online = {}
     for t in out:
@@ -458,6 +477,12 @@ def set_watched(tid: int, body: WatchedIn):
             notifications.notify_watched_backup(tid)
         except Exception:
             pass  # notifications are never allowed to break the watch toggle
+    # watched a series? check right away whether the next season is announced
+    if body.watched:
+        try:
+            seasons.on_watched(tid)
+        except Exception:
+            pass  # the season calendar is never allowed to break watching
     return {"ok": True, "watched": body.watched}
 
 
@@ -709,6 +734,11 @@ def ext_watched(body: ExtWatchedIn):
             notifications.notify_watched_backup(row["id"])
         except Exception:
             pass  # notifications are never allowed to break the report
+        # external watch reports also trigger the next-season lookup
+        try:
+            seasons.on_watched(row["id"])
+        except Exception:
+            pass  # the season calendar is never allowed to break watching
     return {"ok": True, "id": row["id"], "watched": body.watched}
 
 
@@ -739,6 +769,24 @@ def decide_notification(nid: int, body: NotificationDecisionIn):
         return notifications.decide(nid, body.decision)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ---- season calendar (upcoming seasons of watched series) ------------------
+@app.get("/api/seasons/calendar")
+def seasons_calendar():
+    """Everything the calendar popup shows: announced dates (with release
+    pattern all-at-once vs weekly + the full date range), vague windows
+    waiting for an exact date, and finished series."""
+    return {"entries": seasons.calendar_entries()}
+
+
+@app.post("/api/seasons/poll")
+def seasons_poll():
+    """Manual 'check now' — the full sweep (every watched series), run now."""
+    jid = jobs.create("season_poll", total=0)
+    jobs.log(jid, "manual season sweep requested")
+    jobs.run_background(jid, seasons.sweep)
+    return {"ok": True, "job_id": jid}
 
 
 @app.delete("/api/titles/{tid}")

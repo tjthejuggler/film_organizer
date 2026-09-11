@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Film Organizer</title>
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css?v=10">
+<link rel="stylesheet" href="/style.css?v=11">
 </head>
 <body>
 <header>
@@ -24,6 +24,11 @@
       <button id="btnBell" class="btn ghost bell" title="Notifications — decisions waiting for you">
         🔔<span id="bellCount" class="bellpill hidden"></span></button>
       <div id="notifPanel" class="notifpanel hidden"></div>
+    </span>
+    <span class="bellwrap">
+      <button id="btnCalendar" class="btn ghost bell" title="Season calendar — upcoming seasons of series you watch">
+        📅<span id="calCount" class="bellpill hidden"></span></button>
+      <div id="calPanel" class="notifpanel calpanel hidden"></div>
     </span>
     <button id="btnHistory" class="btn ghost" title="Record a movie/series you've seen without owning the file">👁</button>
     <button id="btnSettings" class="btn ghost settings-gear" title="Settings — API keys, library roots, storage folders">⚙</button>
@@ -246,6 +251,6 @@
   <pre id="tLog"></pre>
 </div>
 
-<script src="/app.js?v=12"></script>
+<script src="/app.js?v=13"></script>
 </body>
 </html>

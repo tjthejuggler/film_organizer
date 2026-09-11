@@ -165,6 +165,26 @@ CREATE TABLE IF NOT EXISTS drive_queue(
 );
 CREATE INDEX IF NOT EXISTS idx_drive_queue_status ON drive_queue(status);
 CREATE INDEX IF NOT EXISTS idx_drive_queue_drive  ON drive_queue(drive);
+CREATE TABLE IF NOT EXISTS season_watch(
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    title_id       INTEGER NOT NULL REFERENCES titles(id) ON DELETE CASCADE,
+    season         INTEGER NOT NULL,
+    -- announced: exact date(s) known | vague: rough window only
+    status         TEXT NOT NULL DEFAULT 'pending',
+    release_kind   TEXT,            -- all_at_once | weekly | daily | unknown
+    release_start  TEXT,            -- ISO date of first episode
+    release_end    TEXT,            -- ISO date of last episode (weekly range / finale)
+    window_hint    TEXT,            -- vague period: '2027' | 'Spring 2027' | 'TBA'
+    finished       INTEGER DEFAULT 0,  -- series finale has aired
+    source         TEXT,            -- where the info came from (tmdb/web/manual)
+    note           TEXT,
+    next_check_at  TEXT,            -- when to re-query for a real date (vague rows)
+    checked_at     TEXT,            -- last lookup of ANY kind
+    created_at     TEXT,
+    UNIQUE(title_id, season)
+);
+CREATE INDEX IF NOT EXISTS idx_season_watch_check ON season_watch(status, next_check_at);
+CREATE INDEX IF NOT EXISTS idx_season_watch_title ON season_watch(title_id);
 """
 
 

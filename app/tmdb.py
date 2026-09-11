@@ -165,6 +165,25 @@ def tv_detail(tmdb_id: int) -> dict:
     }
 
 
+def tv_calendar(tmdb_id: int) -> dict:
+    """Season-level airing info for the season-calendar checker: status,
+    next/last episode air dates and the per-season episode counts."""
+    d = _get(f"/tv/{tmdb_id}")
+    return {
+        "status": d.get("status"),
+        "type": d.get("type"),
+        "network": ", ".join(n.get("name") for n in d.get("networks", [])) or None,
+        "next_episode": d.get("next_episode_to_air") or None,
+        "last_episode": d.get("last_episode_to_air") or None,
+        "seasons": [
+            {"season": s.get("season_number"),
+             "episodes": s.get("episode_count"),
+             "air_date": s.get("air_date")}
+            for s in d.get("seasons", []) if (s.get("season_number") or 0) > 0
+        ],
+    }
+
+
 def tv_type(tmdb_id: int):
     """TV 'type' string, e.g. 'Miniseries' | 'Scripted' | 'Talk Show'.
     Drives the miniseries tag (a limited/one-season series)."""

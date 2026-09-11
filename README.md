@@ -39,6 +39,31 @@ release names when normal TMDB matching fails. Use the **Test TMDB** /
 
 ## Features
 
+### 📅 Season calendar (added 2026-09-10)
+Tracks upcoming seasons of every series you have watched:
+
+- **Calendar popup** — click the 📅 button in the top bar: announced seasons
+  (with exact dates), vague windows ("2027", "Jan 2027") still waiting for an
+  exact date, and finished series, all in one list.
+- **Release pattern** — each announced entry says whether episodes drop
+  **all at once** or **weekly**, and weekly shows show the full first→finale
+  date range.
+- **Tag chips in the main list** — series with a known upcoming season show a
+  `S2 · 18 Sep 2026` (or `S2 · 2027` when vague) chip under the name; series
+  whose finale has aired get a `🏁 finished` chip.
+- **Watch trigger** — marking a series watched immediately checks whether the
+  next season is announced.
+- **Weekly re-check** — once a week (on app startup) vague/TBA entries are
+  re-polled via TMDB; entries that found their exact date are never checked
+  again. Finished shows get a slow monthly look for revivals.
+  Manual "check now" lives at the bottom of the calendar popup
+  (`POST /api/seasons/poll`).
+- Initial data was seeded from web research on 2026-09-10
+  (`app/season_seed.py`); new facts continue to come from the TMDB poll.
+  API: `GET /api/seasons/calendar`.
+
+## Features
+
 - **Scans** any number of library roots (external drives: just add the mount
   path in Settings; unplugged drives show as *offline* and their catalog is
   kept, files merely flagged missing).
