@@ -15,8 +15,15 @@ one row with a wrong year) are reported as 'possible' groups.
 import os
 import shutil
 
-from . import parser
+from . import fileops, parser
 from .db import q, q1, tx
+
+# A 'dedicated' release folder may contain at most this much BEYOND the
+# cataloged bytes of the title's own files (subs, artwork and .nfo files
+# are tiny; a whole second movie is not). Beyond that the folder is
+# treated as shared and only the cataloged files are deleted one by one.
+FOLDER_SLACK_RATIO = 1.1
+FOLDER_SLACK_BYTES = 250_000_000  # 250 MB
 
 
 def _roots_ordered() -> list:
@@ -213,28 +220,68 @@ def q1_row(title_id: int):
     return q1("SELECT * FROM titles WHERE id=?", (title_id,))
 
 
+def _folder_plan(files, title_id: int):
+    """Split deletable rows into (whole-folder wipes, individual files).
+
+    A folder qualifies when it is this title's dedicated folder (no other
+    title's files under it per the catalog) AND its actual on-disk content
+    is not way bigger than the title's cataloged bytes — the anti foot-gun
+    that keeps a false 'dedicated' match from wiping a shared directory."""
+    roots = _roots_ordered()
+    candidates: dict = {}  # folder -> [file rows]
+    fallback: list = []
+    for f in files:
+        if f["missing"]:
+            continue
+        p = os.path.abspath(f["path"])
+        if not os.path.exists(p):
+            continue
+        base = _root_of(p, roots)
+        folder = fileops.dedicated_folder(p, base, title_id) if base else None
+        if folder:
+            candidates.setdefault(folder, []).append(f)
+        else:
+            fallback.append(f)
+
+    plan: dict = {}
+    for folder, rows in candidates.items():
+        catalog_bytes = sum(r["size_bytes"] or 0 for r in rows)
+        on_disk = fileops.folder_bytes_on_disk(folder)
+        if on_disk <= catalog_bytes * FOLDER_SLACK_RATIO + FOLDER_SLACK_BYTES:
+            plan[folder] = rows
+        else:
+            fallback.extend(rows)
+    return plan, fallback
+
+
 def _delete_title_files(files, title_id: int, delete_row=True):
     removed, missing = 0, 0
     roots = _roots_ordered()
-    for f in files:
+
+    folders, rest = _folder_plan(files, title_id)
+    for folder, rows in folders.items():
+        # whole release folder goes (Subs/, artwork, … ride along)
+        shutil.rmtree(folder, ignore_errors=True)
+        removed += len(rows)
+    for folder in folders:
+        base = _root_of(folder, roots)
+        if base:
+            fileops.prune_dirs(os.path.dirname(os.path.abspath(folder)), base)
+
+    for f in rest:
         p = f["path"]
         if f["missing"] or not os.path.exists(p):
             missing += 1
+            continue
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
         else:
-            if os.path.isdir(p):
-                shutil.rmtree(p, ignore_errors=True)
-            else:
-                os.remove(p)
-            removed += 1
-            base = _root_of(p, roots)
-            if base:
-                d = os.path.dirname(p)
-                while os.path.abspath(d) != os.path.abspath(base):
-                    try:
-                        os.rmdir(d)
-                    except OSError:
-                        break
-                    d = os.path.dirname(d)
+            os.remove(p)
+        removed += 1
+        base = _root_of(p, roots)
+        if base:
+            fileops.prune_dirs(os.path.dirname(os.path.abspath(p)), base)
+
     with tx() as c:
         if delete_row:
             c.execute("DELETE FROM files WHERE title_id=?", (title_id,))
@@ -242,4 +289,5 @@ def _delete_title_files(files, title_id: int, delete_row=True):
         else:
             for f in files:
                 c.execute("DELETE FROM files WHERE id=?", (f["id"],))
-    return {"removed_files": removed, "already_missing": missing}
+    return {"removed_files": removed, "already_missing": missing,
+            "folders_removed": sorted(folders)}

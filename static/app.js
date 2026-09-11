@@ -1429,7 +1429,10 @@ $("#notifPanel").addEventListener("click", async e => {
       item.remove();
       if (!$$("#notifPanel .notifitem").length)
         $("#notifPanel").innerHTML = '<div class="notifdone">All caught up 🎉</div>';
-      if (r.status === "queued") {
+      if (r.status === "started" && r.job_id) {
+        // background move — progress shows in the job toast immediately
+        watchJob(r.job_id, "Move to backup", () => refreshBellPill());
+      } else if (r.status === "queued") {
         alert(`The backup drive is not connected right now.
 The move was queued and runs automatically when it is connected (Settings → Drive queues).`);
       }

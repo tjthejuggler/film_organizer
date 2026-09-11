@@ -159,9 +159,9 @@ Interactive docs at `/api/docs` (FastAPI). Key endpoints:
 | POST | `/api/wanted` | **external submit**: `{title, kind:"movie"|"series", year?, note?, by?}` — idempotent, auto-enriched; scanner clears the flag when files appear |
 | DELETE | `/api/wanted/{id}` | un-want (wishlist rows without files are removed) |
 | POST | `/api/watched` | **external watched report**: `{title?, kind?, year?, tmdb_id?|imdb_id?, watched?, create_missing?}` — 404 if unknown unless `create_missing:true` adds it to the wishlist |
-| GET  | `/api/notifications` | list notifications (`?status=pending|done|rejected|all`) + pending count |
+| GET  | `/api/notifications` | list notifications (`?status=pending|queued|done|rejected|all`) + pending count |
 | GET  | `/api/notifications/count` | pending count (bell badge polling) |
-| POST | `/api/notifications/{id}/decide` | `{decision:"accept"|"reject"}` — accept moves files to the backup drive now; if the drive is offline the notification stays pending and the error names the missing drive |
+| POST | `/api/notifications/{id}/decide` | `{decision:"accept"|"reject"}` — accept starts a **background** move job (response has `job_id`, UI shows progress toast); if the drive is offline the move goes to the drive queue and runs on connect |
 | GET  | `/api/duplicates` | duplicate groups (copies, sizes, deltas) |
 | DELETE | `/api/titles/{id}/files` | delete files (+ entry by default); `?keep_record=true` keeps the catalog entry as a fileless record |
 | DELETE | `/api/duplicates/{id}` | delete one duplicate copy `{root}` (guarded) |
@@ -192,6 +192,21 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-11 (13)** — **folder-aware moves & deletes + notification click
+  actually feeling alive**: accepting "move to backup?" used to run the whole
+  move synchronously inside the HTTP request — the click looked dead for
+  minutes and impatient re-clicks started several racing move jobs. The move
+  now runs as a **background job** (`status:"started"` + `job_id`), progress
+  shows in the job toast, failures put the notification back to pending for
+  an easy retry. Moves and deletes are now **whole-release-folder aware**:
+  when a title lives in its own folder (the catalog confirms no other title's
+  files are inside), the ENTIRE folder moves/deletes together — Subs/,
+  artwork and .nfo files ride along. Loose files take matching same-stem
+  sidecars (`.srt`, `.nfo`, …). Deletes carry a **size safety guard**: a
+  folder is only wiped whole when its on-disk content is not way bigger than
+  the title's cataloged bytes (≤ catalog×1.1 + 250 MB); otherwise only the
+  cataloged files are removed one by one. New shared helpers live in
+  [`app/fileops.py`](app/fileops.py).
 - **2026-09-10 (12)** — **drive queues**: operations that need an unplugged
   drive no longer dead-end. Moving to internal/external, deleting a title's
   files, deleting a duplicate copy, and accepting a watched→backup

@@ -3,12 +3,18 @@
 Preserves each file's path relative to its current base, updates the DB in
 place (so locations are correct immediately), prunes emptied source
 directories, and recomputes watched-folder flags for the new paths.
+
+Folder-aware: when a title's files sit inside a folder that (per the
+catalog) belongs exclusively to that title — a release folder that also
+holds Subs/, artwork, .nfo … — the WHOLE folder is moved so sidecar files
+are never left behind. Files directly in a shared root move individually,
+taking matching same-stem sidecar files (.srt, .nfo, …) along.
 """
 import os
 import shutil
 from datetime import datetime, timezone
 
-from . import db, parser
+from . import db, fileops, parser
 from .db import q, q1, tx
 
 
@@ -52,43 +58,94 @@ def move_title(job_id: str, title_id: int, target: str):
     if not files:
         raise ValueError("No accessible files to move for this title")
 
-    update(job_id, total=len(files), message=f"Moving {len(files)} file(s) to {target}")
+    # --- plan: dedicated release folders as units, leftovers file-by-file ----
+    folders: dict = {}  # (folder, base) -> [file rows]
+    loose = []          # rows without a dedicated folder (or on dead roots)
+    for f in files:
+        src = os.path.abspath(f["path"])
+        base = src_base(src)
+        folder = fileops.dedicated_folder(src, base, title_id)
+        if folder and os.path.isdir(folder):
+            folders.setdefault((folder, base), []).append(f)
+        else:
+            loose.append(f)
+
+    total = sum(len(fs) for fs in folders.values()) + len(loose)
+    update(job_id, total=total, message=f"Moving {total} file(s) to {target}")
     log(job_id, f"Moving '{title['title']}' -> {dest_base}")
 
     moved = skipped = 0
-    for i, f in enumerate(files, 1):
+    done = 0
+
+    def _tick(n=1):
+        nonlocal done
+        done += n
+        update(job_id, progress=done, message=f"Moving {done}/{total}")
+
+    def _relocate(fs, new_path_of):
+        """Point the catalog rows in `fs` at their new paths (keeps created)."""
+        with tx() as c:
+            for f in fs:
+                c.execute(
+                    "UPDATE files SET path=?, created=COALESCE(created, ?) WHERE id=?",
+                    (new_path_of(f), f["created"], f["id"]))
+
+    def _move_one(f) -> None:
+        """Move a single video file plus its same-stem sidecar files."""
+        nonlocal moved, skipped
         src = os.path.abspath(f["path"])
         base = src_base(src)
         if not base:
             log(job_id, f"SKIP (outside all known roots): {src}")
             skipped += 1
-            continue
+            return
         rel = os.path.relpath(src, base)
         dest = os.path.join(dest_base, rel)
         if dest == src:
             skipped += 1
-            continue
+            return
         if os.path.exists(dest):
             log(job_id, f"SKIP (destination exists): {dest}")
             skipped += 1
-            continue
+            return
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.move(src, dest)
-        moved += 1
-        with tx() as c:
-            # keep the file's recorded creation time across the move
-            # (sqlite3.Row has no .get — index access returns NULL safely)
-            c.execute("UPDATE files SET path=?, created=COALESCE(created, ?) WHERE id=?",
-                      (dest, f["created"], f["id"]))
-        # prune now-empty source directories up to the base
-        d = os.path.dirname(src)
-        while os.path.abspath(d) != os.path.abspath(base):
+        for sc in fileops.sidecar_paths(src):
             try:
-                os.rmdir(d)
+                shutil.move(sc, os.path.join(os.path.dirname(dest),
+                                             os.path.basename(sc)))
             except OSError:
-                break
-            d = os.path.dirname(d)
-        update(job_id, progress=i, message=f"Moved {i}/{len(files)}")
+                pass  # losing a sidecar must never fail the move
+        _relocate([f], lambda _f: dest)
+        fileops.prune_dirs(os.path.dirname(src), base)
+        moved += 1
+
+    for (folder, base), fs in folders.items():
+        rel = os.path.relpath(folder, base)
+        dest = os.path.join(dest_base, rel)
+        if dest == folder:
+            skipped += len(fs)  # already lives at the destination
+        elif os.path.exists(dest):
+            # destination folder already exists: move files one by one
+            # (skipping duplicates) instead of blindly merging the folders
+            log(job_id, f"Destination exists — file-by-file fallback: {dest}")
+            for f in fs:
+                _move_one(f)
+                _tick()
+        else:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(folder, dest)
+            log(job_id, f"Moved folder (Subs etc. ride along): "
+                        f"{os.path.basename(folder)} -> {dest}")
+            _relocate(fs, lambda f: os.path.join(
+                dest, os.path.relpath(os.path.abspath(f["path"]), folder)))
+            fileops.prune_dirs(os.path.dirname(folder), base)
+            moved += len(fs)
+            _tick(len(fs))
+
+    for f in loose:
+        _move_one(f)
+        _tick()
 
     # watched LATCH: moving INTO a watched-marker folder turns the flag on;
     # moving out never turns it off (watched state is system-owned after

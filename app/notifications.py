@@ -12,9 +12,10 @@ the user already answered; if the title's watched state changes again in
 the future, only the user's manual action can create a new one.
 """
 import os
+import threading
 from datetime import datetime, timezone
 
-from . import db, mover
+from . import db, jobs, mover
 from .db import q, q1, tx
 
 
@@ -60,7 +61,7 @@ def notify_watched_backup(title_id: int):
                WHERE NOT EXISTS (
                    SELECT 1 FROM notifications
                    WHERE title_id=? AND type='watched_backup'
-                     AND status IN ('pending','done','rejected'))""",
+                     AND status IN ('pending','queued','done','rejected'))""",
             (title_id, title_id),
         )
     return q1("""SELECT id FROM notifications WHERE title_id=? AND type='watched_backup'
@@ -158,18 +159,35 @@ def decide(notification_id: int, decision: str, queue_when_offline: bool = True)
             "missing_drives": sorted(offline),
         }
 
-    ext = db.settings_get("external_root")
-    try:
-        from . import jobs
-        jid = jobs.create("move", total=0)
-        mover.move_title(jid, n["title_id"], "external")
-        jobs.finish(jid)
-    except Exception as e:
-        # keep the notification pending: the user can retry after fixing
-        return {"ok": False, "status": "pending", "error": str(e)}
-
+    # Run the move in a BACKGROUND job: the old synchronous version held the
+    # HTTP request open for minutes with no UI feedback, so the click looked
+    # dead (and impatient re-clicks started several racing move jobs).
+    jid = jobs.create("move", total=0)
+    jobs.log(jid, f"Move to backup (notification #{notification_id})")
     with tx() as c:
         c.execute(
-            "UPDATE notifications SET status='done', decided_at=? WHERE id=?",
+            "UPDATE notifications SET status='queued', decided_at=? WHERE id=?",
             (_now(), notification_id))
-    return {"ok": True, "status": "done"}
+
+    def _run(job: str):
+        error = None
+        try:
+            mover.move_title(job, n["title_id"], "external")
+        except Exception as e:
+            jobs.log(job, f"FAILED: {e}")
+            error = str(e)
+        jobs.finish(job, error=error)
+        with tx() as c:
+            if error:
+                # back to pending so the bell offers the retry
+                c.execute(
+                    "UPDATE notifications SET status='pending' WHERE id=? "
+                    "AND status='queued'", (notification_id,))
+            else:
+                c.execute(
+                    "UPDATE notifications SET status='done', "
+                    "decided_at=COALESCE(decided_at, ?) WHERE id=? "
+                    "AND status='queued'", (_now(), notification_id))
+
+    threading.Thread(target=_run, args=(jid,), daemon=True).start()
+    return {"ok": True, "status": "started", "job_id": jid}
