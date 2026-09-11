@@ -93,12 +93,15 @@ def _probe(title_id: int) -> dict:
     seasons = {s["season"]: s for s in info.get("seasons", []) if s["season"]}
     next_ep = info.get("next_episode") or {}
     last_ep = info.get("last_episode") or {}
-    # baseline = highest CONCRETE season (announced/done rows or the title's
-    # own season count); vague 'window' rows must not inflate it, or the
-    # promotion of that very row would be blocked by `nxt > base`
+    # baseline = last AIRED season. TMDB's titles.seasons counts the
+    # upcoming season the moment it is announced, so using it as the base
+    # would block promotion of exactly that season (nxt > base fails).
+    # Fall back to the highest CONCRETE tracked season, then the title's
+    # season count; vague 'window' rows must not inflate the base.
     known = q1("SELECT MAX(season) m FROM season_watch "
                "WHERE title_id=? AND status!='vague'", (title_id,))
-    base = known["m"] or row["seasons"] or 1
+    base = (last_ep.get("season_number") or known["m"]
+            or row["seasons"] or 1)
 
     out = {"found": True, "status": info.get("status"),
            "network": info.get("network")}
@@ -402,9 +405,20 @@ def seed(job_id: str = None):
 # ---- API payloads -----------------------------------------------------------
 
 def calendar_entries() -> list:
-    """Everything for the calendar popup, sorted by date (vague at the end)."""
+    """Everything for the calendar popup, sorted by date (vague at the end).
+
+    Defensive dedup: when the same show exists as several titles rows
+    (episode-rip junk), only the OLDEST row's season entry is shown so the
+    popup never lists one season once per duplicate row."""
     rows = q("""SELECT s.*, t.title, t.poster, t.year, t.network, t.tmdb_id
                 FROM season_watch s JOIN titles t ON t.id=s.title_id
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM season_watch s2
+                    JOIN titles t2 ON t2.id=s2.title_id
+                    WHERE s2.season = s.season
+                      AND t2.tmdb_id IS NOT NULL
+                      AND t2.tmdb_id = t.tmdb_id
+                      AND t2.id < t.id)
                 ORDER BY CASE s.status WHEN 'announced' THEN 0
                                        WHEN 'vague' THEN 1 ELSE 2 END,
                          s.release_start, t.title COLLATE NOCASE""")

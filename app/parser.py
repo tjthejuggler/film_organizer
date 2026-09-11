@@ -28,7 +28,8 @@ MASTERCLASS_RE = re.compile(r"masterclass|master\s?class|course|tutorial|udemy|l
 
 VLC_RE = re.compile(r"^vlc[\-._ ]?record[\-._ ]?\d{4}[\-._ ]?\d{2}[\-._ ]?\d{2}[\-._ ]?\d{2}h\d{2}m\d{2}s[\-._ ]*", re.I)
 SITE_RE = re.compile(
-    r"^\s*(?:www\.)?[\w\-]{2,40}\.(?:org|com|net|io|tv|co|cc|me|xyz|to|st|biz|info|site|online|club|ru|uk|us)\b[\s._\-]*",
+    r"^\s*(?:www\.)?[\w\-]{2,40}\.(?:org|com|net|io|tv|co|cc|me|xyz|to|st|biz|info|site|online|club|ru|uk|us"
+    r"|su|pw|top|vip|pro|icu|cyou|cfd|sbs|pics|cam|fun|link|live|one|now|page|app|dev|fyi|gg|fm)\b[\s._\-]*",
     re.I,
 )
 BRACKET_RE = re.compile(r"\[[^\[\]]*\]")
@@ -41,6 +42,9 @@ SEASON_TAG_RE = re.compile(r"\bs(\d{1,2})\b", re.I)
 SEASON_WORD_RE = re.compile(r"\bseason[\s._]?(\d{1,2})\b", re.I)
 EPISODE_WORD_RE = re.compile(r"\bepisode[\s._]?(\d{1,3})\b", re.I)
 EP_TAG_RE = re.compile(r"\be(?:p)?[\s._]?(\d{1,3})\b", re.I)
+# documentary packs: "Series 2 03of10 ..." or bare "04of12"
+SERIES_WORD_RE = re.compile(r"\bseries[\s._]?(\d{1,2})\b", re.I)
+OF_RE = re.compile(r"\b(\d{1,3})\s*(?:of|/)\s*(\d{1,3})\b", re.I)
 
 # --- junk-token machinery -------------------------------------------------
 _MISC_WORDS = {
@@ -173,6 +177,19 @@ def parse_name(raw: str) -> dict:
         if ew:
             episode = int(ew.group(1))
             tag_starts.append(ew.start())
+        # "Series 2 03of10" / bare "03of10" packs: "series" only counts as a
+        # season word when an NNofMM tag backs it up ("Series 7" the film
+        # must stay a movie)
+        if episode is None:
+            mof = OF_RE.search(s)
+            if mof:
+                episode = int(mof.group(1))
+                tag_starts.append(mof.start())
+                if season is None:
+                    msw = SERIES_WORD_RE.search(s)
+                    if msw:
+                        season = int(msw.group(1))
+                        tag_starts.append(msw.start())
 
     region = s[: min(tag_starts)] if tag_starts else s
 

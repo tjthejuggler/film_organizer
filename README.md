@@ -37,6 +37,22 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-11** — **episode-rip junk rows fixed at the root**: the parser's
+  site-prefix stripper now knows many more TLDs (`www.1TamilMV.su -` etc. was
+  previously kept in the title), and documentary packs named
+  "Series 2 03of10 …" are recognized as season/episode tags. Names that
+  still parse empty never become one junk row per episode: the scanner now
+  falls back to the *show/folder* anchor instead of the raw file stem.
+  Enrich retries after LLM name cleanup keep the cleaned title even when the
+  kind was already right. Same-show duplicate rows can no longer flood the
+  calendar (`calendar_entries` dedupes by tmdb_id), `_probe` uses the last
+  *aired* season as its baseline (titles.seasons includes the upcoming
+  season and blocked announcements), and `db.tx()` got a reentrant lock —
+  nested `jobs.log()` inside the scan transaction used to deadlock the
+  whole app at "writing database…". Rescan + reseed merged the six
+  "www.1TamilMV.su - Black Doves S01E0x" rows into one matched
+  **Black Doves** row (S2 · 5 Nov 2026 chip); search now finds it.
+
 ## Features
 
 ### 📅 Season calendar (added 2026-09-10)

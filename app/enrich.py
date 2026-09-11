@@ -107,23 +107,33 @@ def enrich_one(row, job_log=None, force=False):
                 new_title = cleaned["title"]
                 new_year = cleaned["year"]
                 new_kind = cleaned["kind"]
-                # persist kind correction only when the kind isn't user-locked
-                if new_kind != kind and not row["kind_locked"]:
-                    new_key = (
-                        f"s:{parser.normalize_key(new_title)}"
-                        if new_kind == "series"
-                        else f"m:{parser.normalize_key(new_title)}:{new_year or 0}"
-                    )
+                # kind flips only when the kind isn't user-locked; the cleaned
+                # TITLE is persisted and used either way — without this a junk
+                # name whose kind was already right could never recover
+                flip = new_kind != kind and not row["kind_locked"]
+                eff_kind = new_kind if flip else kind
+                new_key = (
+                    f"s:{parser.normalize_key(new_title)}"
+                    if eff_kind == "series"
+                    else f"m:{parser.normalize_key(new_title)}:{new_year or 0}"
+                )
+                try:
                     with tx() as c:
-                        try:
+                        if flip:
                             c.execute(
                                 "UPDATE titles SET kind=?, title=?, year=COALESCE(?, year), "
                                 "dedupe_key=? WHERE id=?",
                                 (new_kind, new_title, new_year, new_key, tid),
                             )
-                            kind, title, year = new_kind, new_title, new_year or year
-                        except Exception:
-                            pass  # dedupe collision: keep original identity
+                        else:
+                            c.execute(
+                                "UPDATE titles SET title=?, year=COALESCE(?, year), "
+                                "dedupe_key=? WHERE id=?",
+                                (new_title, new_year, new_key, tid),
+                            )
+                except Exception:
+                    pass  # dedupe collision: row identity stays, retry still uses the clean name
+                kind, title, year = eff_kind, new_title, new_year or year
                 try:
                     cands = (tmdb.search_tv(title, year) if kind == "series"
                              else tmdb.search_movie(title, year))

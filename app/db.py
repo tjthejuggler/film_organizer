@@ -7,7 +7,11 @@ from contextlib import contextmanager
 from . import config
 
 _local = threading.local()
-_write_lock = threading.Lock()
+# RLock (not Lock): code paths legitimately nest tx() — e.g. scan_roots
+# opens one big transaction and then calls jobs.log() inside it, which
+# opens its own tx() on the same thread. A plain Lock self-deadlocks there
+# (this is what froze scans at 'writing database...').
+_write_lock = threading.RLock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings(
@@ -276,6 +280,7 @@ def conn() -> sqlite3.Connection:
     c = getattr(_local, "con", None)
     if c is None:
         c = sqlite3.connect(config.DB_PATH, timeout=30, check_same_thread=False)
+        c.execute("PRAGMA busy_timeout=30000")
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA foreign_keys=ON")
