@@ -232,11 +232,13 @@ def scan_roots(job_id: str, roots: list):
                 tid = q1("SELECT id FROM titles WHERE dedupe_key=?", (g["key"],))["id"]
                 was = wat = None
                 was_wanted = 0
+                was_history = 0
                 had_files = False
             else:
                 tid = row["id"]
                 was, wat = row["watched_folder"], row["watched_at"]
                 was_wanted = row["wanted"] or 0
+                was_history = row["history"] or 0
                 had_files = bool(q1(
                     "SELECT 1 FROM files WHERE title_id=? AND missing=0 LIMIT 1", (tid,)))
 
@@ -307,7 +309,7 @@ def scan_roots(job_id: str, roots: list):
             adopt = 1 if (was_wanted and not had_files and size > 0) else 0
             # A seen-history row that gained files is owned again: the
             # history flag clears but the watched state is kept (nw latch).
-            owned_again = 1 if (row["history"] and size > 0) else 0
+            owned_again = 1 if (was_history and size > 0) else 0
             c.execute(
                 """UPDATE titles SET last_seen=?, size_bytes=?, seasons=?,
                    episode_count=?, watched_folder=?, watched_at=?,
