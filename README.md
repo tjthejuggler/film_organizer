@@ -37,6 +37,18 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-11** — **recently-released seasons on the calendar**: the 📅 popup
+  now has a **Recently released** section above the upcoming list — seasons
+  that started airing in the last 90 days of series you watch (or partly
+  watched), one entry per show, showing the date range (or "airing now") and
+  how long ago it started. A 👁 button per entry marks the season watched and
+  clears it; the badge pill counts upcoming **and** unseen recent seasons.
+  Backed by a new `season_watch.seen` flag, a `recent` branch in the TMDB
+  sweep that tracks the current/just-finished season with its real air dates
+  (`GET /api/seasons/recent`, `POST /api/seasons/{id}/seen`), and a full
+  sweep backfill that seeded the catch-up list from TMDB's aired-episode
+  data — the same data source that powers the upcoming list.
+
 - **2026-09-11** — **episode-rip junk rows fixed at the root**: the parser's
   site-prefix stripper now knows many more TLDs (`www.1TamilMV.su -` etc. was
   previously kept in the title), and documentary packs named
@@ -74,6 +86,11 @@ Tracks upcoming seasons of every series you have watched:
   again. Finished shows get a slow monthly look for revivals.
   Manual "check now" lives at the bottom of the calendar popup
   (`POST /api/seasons/poll`).
+- **Recently released** — seasons that started airing in the last 90 days of
+  the series you watch appear at the top of the popup until you mark the
+  season 👁 seen; the sweep records current seasons with their real first→
+  last air dates (all-at-one drops included). API: `GET /api/seasons/recent`,
+  `POST /api/seasons/{id}/seen`.
 - Initial data was seeded from web research on 2026-09-10
   (`app/season_seed.py`); new facts continue to come from the TMDB poll.
   API: `GET /api/seasons/calendar`.

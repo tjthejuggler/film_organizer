@@ -10,6 +10,9 @@ What it does
 * FINISHED: when TMDB says the show is 'Ended' and the last episode aired,
   the row flips to done (finished=1) — the main list then shows the
   'finished' chip instead of an upcoming-season chip.
+* RECENT: seasons that started airing within RECENT_DAYS for series the
+  user has (partly) watched land on the catch-up list until the season is
+  marked seen (recent_entries / mark_season_seen).
 
 Data lives in the `season_watch` table: one row per (title, season).
 `announce_start` is the first episode's date; `release_end` covers weekly
@@ -38,6 +41,39 @@ def _in_days(n: int) -> str:
 
 def _next_week() -> str:
     return _in_days(7)
+
+
+def _today() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+# a season counts as 'recently released' while its start date sits inside
+# this window (about a season's typical weekly run + slack) — also covers
+# shows that are airing right now
+RECENT_DAYS = 90
+
+
+def _recent_since() -> str:
+    return (datetime.now(timezone.utc)
+            - timedelta(days=RECENT_DAYS)).strftime("%Y-%m-%d")
+
+
+def _recent_span(rc: dict) -> tuple:
+    """(release_kind, release_end) for a recently aired season. An
+    all-at-once drop has first == last air date; otherwise the last AIRED
+    episode is the floor and (episodes-1) weeks after the start the usual
+    weekly ceiling estimate."""
+    start, eps = rc["start"], rc.get("episodes") or 0
+    if rc["last_ep_date"] == start and eps > 1:
+        return "all_at_once", start
+    end = rc["last_ep_date"] or None
+    if not end and start and eps > 1:
+        try:
+            end = (datetime.strptime(start, "%Y-%m-%d")
+                   + timedelta(weeks=eps - 1)).strftime("%Y-%m-%d")
+        except ValueError:
+            end = None
+    return "weekly", end
 
 
 def upsert(title_id: int, season: int, force: bool = False, **fields):
@@ -105,6 +141,19 @@ def _probe(title_id: int) -> dict:
 
     out = {"found": True, "status": info.get("status"),
            "network": info.get("network")}
+
+    # recently-released season facts: the last episode that actually aired
+    # identifies the current / just-finished season (the catch-up list and
+    # the sweep's recent branch use it — next_episode only ever points at
+    # FUTURE seasons, so current seasons are invisible without this)
+    la_s = last_ep.get("season_number")
+    if la_s and last_ep.get("air_date"):
+        s_info = seasons.get(la_s) or {}
+        out["recent"] = {"season": la_s,
+                         "start": (s_info.get("air_date")
+                                   or last_ep["air_date"])[:10],
+                         "episodes": s_info.get("episodes"),
+                         "last_ep_date": last_ep["air_date"][:10]}
 
     nxt = next_ep.get("season_number")
     if nxt and nxt > base:
@@ -252,7 +301,8 @@ def sweep(job_id: str = None):
                           THEN t.watched_manual ELSE t.watched_folder END)=1
                     OR t.history=1)""")
     _log(f"sweeping {len(rows)} watched series against TMDB")
-    announced = done = covered = errors = 0
+    announced = done = recent_n = covered = errors = 0
+    since, today = _recent_since(), _today()
     for i, t in enumerate(rows, 1):
         if job_id:
             update(job_id, progress=i, total=len(rows),
@@ -291,19 +341,37 @@ def sweep(job_id: str = None):
         if not res.get("found"):
             errors += 1
             continue
+        rc = res.get("recent") or {}
+        rc_in_window = bool(rc) and since <= rc["start"] <= today
         if res.get("finished"):
             _mark_finished(t["id"])
             # untracked show: record its last season as done so the
-            # finished chip has something to stand on
+            # finished chip has something to stand on — with the real
+            # season dates when the finale aired inside the recent window
+            # (that is how a just-ended show lands on the catch-up list)
             known = q1("SELECT COUNT(*) n FROM season_watch WHERE title_id=?",
                        (t["id"],))
             if not known["n"]:
                 title_row = q1("SELECT seasons FROM titles WHERE id=?", (t["id"],))
-                upsert(t["id"], title_row["seasons"] or 1,
+                kind, end = _recent_span(rc) if rc_in_window else (None, None)
+                upsert(t["id"], rc.get("season") or title_row["seasons"] or 1,
                        status="done", finished=1, source="tmdb",
+                       release_kind=kind,
+                       release_start=rc.get("start") if rc_in_window else None,
+                       release_end=end,
                        next_check_at=_in_days(30), checked_at=_now())
             done += 1
-        elif res.get("next_season") and res.get("release_start"):
+        if rc_in_window and not res.get("finished"):
+            # current / just-finished season of a show still on the air:
+            # track it with its real dates so it shows under 'recently
+            # released' until the user marks the season seen
+            kind, end = _recent_span(rc)
+            upsert(t["id"], rc["season"], status="announced",
+                   release_kind=kind, release_start=rc["start"],
+                   release_end=end, source="tmdb", checked_at=_now(),
+                   finished=0)
+            recent_n += 1
+        if res.get("next_season") and res.get("release_start"):
             upsert(t["id"], res["next_season"], force=True,
                    status="announced", release_kind=res.get("release_kind"),
                    release_start=res["release_start"],
@@ -311,10 +379,10 @@ def sweep(job_id: str = None):
                    source="tmdb", next_check_at=None, checked_at=_now(),
                    finished=0)
             announced += 1
-    _log(f"sweep done: {announced} announced, {done} finished, "
-         f"{covered} duplicates, {errors} not probeable")
-    return {"total": len(rows), "announced": announced, "done": done,
-            "duplicates": covered, "errors": errors}
+    _log(f"sweep done: {announced} upcoming announced, {recent_n} recent, "
+         f"{done} finished, {covered} duplicates, {errors} not probeable")
+    return {"total": len(rows), "announced": announced, "recent": recent_n,
+            "done": done, "duplicates": covered, "errors": errors}
 
 
 def _safe(fn, *args, **kwargs):
@@ -436,6 +504,73 @@ def calendar_entries() -> list:
     return out
 
 
+def recent_entries() -> list:
+    """The catch-up list: seasons that started airing inside RECENT_DAYS of
+    series the user has watched (partly), whose latest released season is
+    not marked seen yet. One entry per show — duplicate title rows of the
+    same show are deduped by tmdb_id (oldest row wins) and only the MOST
+    RECENT released season per title is listed, sorted newest first."""
+    since, today = _recent_since(), _today()
+    watched = ("(CASE WHEN t.watched_manual IS NOT NULL "
+               "THEN t.watched_manual ELSE t.watched_folder END)=1 "
+               "OR t.history=1")
+    window = ("s.release_start IS NOT NULL AND s.release_start<=? "
+              "AND COALESCE(s.release_end, s.release_start)>=?")
+    rows = q(f"""SELECT s.id, s.title_id, s.season, s.status, s.finished,
+                        s.release_kind, s.release_start, s.release_end,
+                        t.title, t.poster, t.year, t.network, t.tmdb_id
+                 FROM season_watch s JOIN titles t ON t.id=s.title_id
+                 WHERE s.seen=0
+                   AND {window}
+                   AND {watched}
+                   AND NOT EXISTS (          -- duplicate show rows: oldest wins
+                       SELECT 1 FROM season_watch s2
+                       JOIN titles t2 ON t2.id=s2.title_id
+                       WHERE s2.seen=0
+                         AND s2.release_start IS NOT NULL
+                         AND s2.release_start<=?
+                         AND COALESCE(s2.release_end, s2.release_start)>=?
+                         AND t2.tmdb_id IS NOT NULL
+                         AND t2.tmdb_id=t.tmdb_id AND t2.id<t.id)
+                   AND NOT EXISTS (          -- only the LATEST released season
+                       SELECT 1 FROM season_watch s3
+                       WHERE s3.title_id=s.title_id AND s3.id!=s.id
+                         AND s3.release_start IS NOT NULL
+                         AND s3.release_start>s.release_start
+                         AND s3.release_start<=?)
+                 ORDER BY s.release_start DESC, t.title COLLATE NOCASE""",
+             (today, since, today, since, today))
+    today_d = datetime.now(timezone.utc).date()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            rs = datetime.strptime(d["release_start"], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            continue
+        end_d = None
+        if d.get("release_end"):
+            try:
+                end_d = datetime.strptime(d["release_end"], "%Y-%m-%d").date()
+            except ValueError:
+                pass
+        d["days_ago"] = (today_d - rs).days
+        # no end date on a tracked season means it is still going (the
+        # sweep only leaves the end blank while episodes keep airing)
+        d["airing"] = end_d is None or end_d >= today_d
+        out.append(d)
+    return out
+
+
+def mark_season_seen(entry_id: int, seen: bool = True) -> dict:
+    """User watched this specific season — it leaves (or re-enters) the
+    recently-released catch-up list. sweep/upsert never touch this flag."""
+    with tx() as c:
+        c.execute("UPDATE season_watch SET seen=? WHERE id=?",
+                  (1 if seen else 0, entry_id))
+    return {"id": entry_id, "seen": bool(seen)}
+
+
 def flags_for_titles(title_ids: list) -> dict:
     """Per-title badge info for the main list: upcoming season chip and/or
     finished chip. Duplicate rows of the same show (episode rips, renames)
@@ -464,7 +599,10 @@ def flags_for_titles(title_ids: list) -> dict:
         if r["finished"] or r["status"] == "done":
             e["finished"] = True
             continue
-        if r["status"] == "announced" and r["release_start"]:
+        # past-dated announced rows are the recently-released seasons — they
+        # belong to the catch-up list, never to the 'upcoming season' chip
+        if r["status"] == "announced" and r["release_start"] \
+                and r["release_start"] >= _today():
             try:
                 d = datetime.strptime(r["release_start"], "%Y-%m-%d")
                 label = f"S{r['season']} · {d.strftime('%-d %b %Y')}"

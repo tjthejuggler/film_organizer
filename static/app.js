@@ -1273,11 +1273,41 @@ function calWhen(e) {
   return e.window_hint || "date TBA";
 }
 
+// recent-entry line: "S3 · 12 Aug 2026 → 7 Oct 2026 · airing" / "… · 18 days ago"
+function calRecentWhen(e) {
+  const start = fmtCalDate(e.release_start);
+  const range = e.release_end && e.release_end !== e.release_start
+    ? `${start} → ${fmtCalDate(e.release_end)}` : start;
+  const age = e.days_ago === 0 ? "started today"
+    : e.days_ago === 1 ? "started yesterday"
+    : `${e.days_ago} days ago`;
+  return `${range} · ${e.airing ? "airing now" : age}`;
+}
+
 function calPattern(e) {
   if (e.status === "done" || e.finished) return "series finished";
   if (e.release_kind === "all_at_once") return "all at once";
   if (e.release_kind === "weekly") return "weekly episodes";
   return "";
+}
+
+function renderRecentItem(e) {
+  const poster = e.poster
+    ? `<img class="thumb" loading="lazy" src="${esc(e.poster)}">`
+    : `<div class="thumb ph">🎬</div>`;
+  return `<div class="notifitem calitem cal-recent" data-open-title="${e.title_id}">
+    <div class="ntop">
+      ${poster}
+      <div>
+        <div class="ntitle">${esc(e.title)}</div>
+        <div class="nmeta">S${e.season} · <b>${esc(calRecentWhen(e))}</b>
+          ${e.release_kind === "all_at_once" ? " · all at once" : ""}</div>
+        ${e.note ? `<div class="nmeta dim">${esc(e.note)}</div>` : ""}
+      </div>
+      <button class="btn mini seenbtn" data-seen-id="${e.id}"
+        title="Mark this season watched — removes it from this list">👁</button>
+    </div>
+  </div>`;
 }
 
 function renderCalItem(e) {
@@ -1310,11 +1340,21 @@ async function toggleCalPanel() {
   }
   panel.classList.remove("hidden");
   panel.innerHTML = '<div class="notifdone">Loading…</div>';
-  const { entries } = await api("/api/seasons/calendar");
-  const open = entries.filter(e => e.status !== "done");
+  const [{ entries }, recent] = await Promise.all([
+    api("/api/seasons/calendar"), api("/api/seasons/recent"),
+  ]);
+  // upcoming = announced rows whose date is still in the future (past-dated
+  // announced rows are recently-released seasons — the section above), plus
+  // vague windows; done rows go to their own section
+  const open = entries.filter(e => e.status === "vague"
+    || (e.status === "announced"
+        && (e.days_until === undefined || e.days_until >= 0)));
   const done = entries.filter(e => e.status === "done" || e.finished);
-  panel.innerHTML = open.length || done.length
-    ? (open.length ? '<div class="notifhead">Upcoming seasons</div>'
+  const recents = recent.entries || [];
+  panel.innerHTML = recents.length || open.length || done.length
+    ? (recents.length ? '<div class="notifhead">Recently released</div>'
+       + recents.map(renderRecentItem).join("") : "")
+      + (open.length ? '<div class="notifhead" style="margin-top:6px">Upcoming seasons</div>'
        + open.map(renderCalItem).join("") : "")
       + (done.length ? '<div class="notifhead" style="margin-top:6px">Finished</div>'
        + done.map(renderCalItem).join("") : "")
@@ -1335,7 +1375,17 @@ document.addEventListener("click", e => {
   if (!e.target.closest("#btnCalendar") && !e.target.closest("#calPanel"))
     $("#calPanel").classList.add("hidden");
 });
-$("#calPanel").addEventListener("click", e => {
+$("#calPanel").addEventListener("click", async e => {
+  const seen = e.target.closest("[data-seen-id]");
+  if (seen) {
+    seen.disabled = true;
+    try {
+      await api(`/api/seasons/${seen.dataset.seenId}/seen`, { method: "POST", body: { seen: true } });
+      await toggleCalPanel(); // reopen = refresh without the seen entry
+    } catch (err) { seen.disabled = false; alert(err.message); }
+    refreshCalPill();
+    return;
+  }
   const t = e.target.closest("[data-open-title]");
   if (t && t.dataset.openTitle) {
     $("#calPanel").classList.add("hidden");
@@ -1345,8 +1395,12 @@ $("#calPanel").addEventListener("click", e => {
 
 async function refreshCalPill() {
   try {
-    const { entries } = await api("/api/seasons/calendar");
-    const n = entries.filter(e => e.status === "announced").length;
+    const [{ entries }, recent] = await Promise.all([
+      api("/api/seasons/calendar"), api("/api/seasons/recent"),
+    ]);
+    const n = entries.filter(e => e.status === "announced"
+        && (e.days_until === undefined || e.days_until >= 0)).length
+      + (recent.entries || []).length;
     const pill = $("#calCount");
     pill.textContent = n > 9 ? "9+" : n;
     pill.classList.toggle("hidden", n === 0);

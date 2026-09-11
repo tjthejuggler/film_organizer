@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS season_watch(
     release_end    TEXT,            -- ISO date of last episode (weekly range / finale)
     window_hint    TEXT,            -- vague period: '2027' | 'Spring 2027' | 'TBA'
     finished       INTEGER DEFAULT 0,  -- series finale has aired
+    seen           INTEGER DEFAULT 0,  -- user watched THIS season (catch-up list)
     source         TEXT,            -- where the info came from (tmdb/web/manual)
     note           TEXT,
     next_check_at  TEXT,            -- when to re-query for a real date (vague rows)
@@ -189,6 +190,8 @@ CREATE TABLE IF NOT EXISTS season_watch(
 );
 CREATE INDEX IF NOT EXISTS idx_season_watch_check ON season_watch(status, next_check_at);
 CREATE INDEX IF NOT EXISTS idx_season_watch_title ON season_watch(title_id);
+-- idx_season_watch_seen is created in ensure() AFTER the seen-column
+-- migration (same pattern as the migrated titles indexes above)
 """
 
 
@@ -230,6 +233,12 @@ def ensure():
         # miniseries and filterable via the genre dropdown
         if "is_miniseries" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN is_miniseries INTEGER DEFAULT 0")
+        # season_watch.seen: user watched a specific season (catch-up list);
+        # fresh DBs get the column from SCHEMA, old ones migrate here
+        if "seen" not in {r[1] for r in con.execute("PRAGMA table_info(season_watch)")}:
+            con.execute("ALTER TABLE season_watch ADD COLUMN seen INTEGER DEFAULT 0")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_season_watch_seen "
+                    "ON season_watch(seen)")
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
         if "created" not in fcols:
             con.execute("ALTER TABLE files ADD COLUMN created REAL")

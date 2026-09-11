@@ -782,6 +782,25 @@ def seasons_calendar():
     return {"entries": seasons.calendar_entries()}
 
 
+@app.get("/api/seasons/recent")
+def seasons_recent():
+    """Catch-up list: seasons that started airing in the last weeks for
+    series the user watches (or partly watched), latest season per show,
+    until the season is marked seen."""
+    return {"entries": seasons.recent_entries()}
+
+
+class SeasonSeenIn(BaseModel):
+    seen: bool = True
+
+
+@app.post("/api/seasons/{entry_id}/seen")
+def seasons_seen(entry_id: int, body: SeasonSeenIn):
+    """'I watched this season' — removes it from the recently-released
+    list (seen=false puts it back)."""
+    return seasons.mark_season_seen(entry_id, body.seen)
+
+
 @app.post("/api/seasons/poll")
 def seasons_poll():
     """Manual 'check now' — the full sweep (every watched series), run now."""

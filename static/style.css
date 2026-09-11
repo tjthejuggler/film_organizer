@@ -378,7 +378,11 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 .calitem { cursor: pointer; }
 .calitem.cal-vague { opacity: .85; }
 .calitem.cal-done { opacity: .55; }
+/* recently-released seasons: green edge + seen button on the right */
+.calitem.cal-recent { border-left: 3px solid var(--ok); }
 .calitem .nmeta b { color: var(--text); }
+.seenbtn { margin-left: auto; flex: none; }
+.seenbtn:hover { background: var(--ok); border-color: var(--ok); color: #04150a; }
 .calfoot {
   font-size: 11.5px; color: var(--dim); text-align: center; padding-top: 4px;
 }
