@@ -37,6 +37,20 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-12** — **organized backup drive + smarter Move buttons**: moves to
+  the external drive now land in kind-based subfolders — movies in `Movies/`,
+  series in `Series/` — so the backup drive stays browsable (internal storage
+  keeps its existing layout; a legacy `external_root` setting pointing into
+  `…/Movies` is normalized to the drive root so nothing double-nests, and
+  moving a title back strips the kind hop). The title API now reports
+  `storage_side`, and the drawer shows only the move button that makes sense:
+  a title already on the drive offers just **💻 Internal**, everything else
+  just **🔌 External**. Every title row also got a **⧉ copy** icon directly
+  after the name (before the wanted ★ and other icons) that copies the title
+  to the clipboard — works on plain-HTTP too via a fallback. Also fixed a
+  pre-existing startup breaker by adding `python-multipart` to the venv +
+  requirements.
+
 - **2026-09-11** — **recently-released seasons on the calendar**: the 📅 popup
   now has a **Recently released** section above the upcoming list — seasons
   that started airing in the last 90 days of series you watch (or partly

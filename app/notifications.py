@@ -15,7 +15,7 @@ import os
 import threading
 from datetime import datetime, timezone
 
-from . import db, jobs, mover
+from . import db, fileops, jobs, mover
 from .db import q, q1, tx
 
 
@@ -24,12 +24,12 @@ def _now() -> str:
 
 
 def _lives_only_on_backup(title_id: int) -> bool:
-    """True when every non-missing file already sits under external_root —
+    """True when every non-missing file already sits on the backup drive —
     nothing to back up, so no notification."""
-    ext = db.settings_get("external_root")
+    ext = fileops.backup_root()
     if not ext:
         return False
-    ext = os.path.abspath(ext).rstrip(os.sep) + os.sep
+    ext = ext.rstrip(os.sep) + os.sep
     for f in q("SELECT path FROM files WHERE title_id=? AND missing=0",
                (title_id,)):
         p = os.path.abspath(f["path"])
@@ -99,12 +99,11 @@ def pending_count() -> int:
 
 def _offline_backup_roots() -> set:
     """Which roots the backup would need that are currently not mounted.
-    The move target is the configured external_root; also treat every
-    enabled library root that is not accessible as unavailable."""
-    ext = db.settings_get("external_root")
+    The move target is the backup drive (normalized external_root); also
+    treat every enabled library root that is not accessible as unavailable."""
+    ext = fileops.backup_root()
     if not ext:
         return set()
-    ext = os.path.abspath(ext)
     return set() if os.path.isdir(ext) else {ext}
 
 

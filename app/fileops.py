@@ -8,10 +8,29 @@ deletes makes accidentally wiping a huge shared directory impossible.
 """
 import os
 
+from . import db
 from .db import q1
 
 SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".sup"}
 SIDECAR_EXTS = SUBTITLE_EXTS | {".nfo", ".txt", ".jpg", ".jpeg", ".png"}
+
+
+def backup_root() -> str:
+    """Normalized backup-drive root from the external_root setting.
+
+    The backup layout keeps Movies/ and Series/ side by side on the drive;
+    when the setting points INTO one of those kind folders (e.g.
+    /media/X10 Pro/Movies), the actual drive root is one level up — so
+    movies keep landing in the existing Movies/ and series get a sibling
+    Series/. Empty string when no external root is configured."""
+    ext = db.settings_get("external_root")
+    if not ext:
+        return ""
+    root = os.path.abspath(ext)
+    kind_dirs = {"movies", "series"}
+    if os.path.basename(root).lower() in kind_dirs:
+        root = os.path.dirname(root)
+    return root
 
 
 def like_under(folder: str) -> str:

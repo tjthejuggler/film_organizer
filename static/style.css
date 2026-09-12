@@ -88,6 +88,13 @@ td { padding: 8px; vertical-align: top; }
 }
 .thumb.ph { display: flex; align-items: center; justify-content: center; color: #333; font-size: 18px; }
 .tname { font-weight: 600; }
+/* copy title to clipboard: subtle inline icon right after the name */
+.copybtn {
+  background: none; border: none; padding: 0 1px 0 6px; cursor: pointer;
+  color: var(--dim); font-size: .8em; opacity: .55; vertical-align: baseline;
+}
+.copybtn:hover { opacity: 1; color: inherit; transform: scale(1.15); }
+.copybtn.ok { opacity: 1; color: var(--ok); }
 .tsub { color: var(--dim); font-size: 12px; margin-top: 2px; max-width: 420px;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge {

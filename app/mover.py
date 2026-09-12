@@ -14,7 +14,7 @@ import os
 import shutil
 from datetime import datetime, timezone
 
-from . import db, fileops, parser
+from . import config, db, fileops, parser
 from .db import q, q1, tx
 
 
@@ -26,6 +26,7 @@ def _candidate_bases() -> list:
     bases = [
         db.settings_get("internal_root"),
         db.settings_get("external_root"),
+        fileops.backup_root(),  # normalized drive root (Movies//Series/ parent)
     ]
     bases += [r["path"] for r in q("SELECT path FROM roots WHERE enabled=1")]
     return [os.path.abspath(b) for b in bases if b]
@@ -48,11 +49,33 @@ def move_title(job_id: str, title_id: int, target: str):
     dest_base = db.settings_get(f"{target}_root")
     if not dest_base:
         raise ValueError(f"No {target} folder configured — set it in Settings first")
-    dest_base = os.path.abspath(dest_base)
-    if not os.path.isdir(dest_base):
+    # external = the backup drive; normalize so a setting pointing INTO the
+    # Movies folder (legacy layout) still resolves to the drive root
+    drive_root = fileops.backup_root() if target == "external" \
+        else os.path.abspath(dest_base)
+    if not os.path.isdir(drive_root):
         raise ValueError(
-            f"{target} folder not accessible: {dest_base} — is the drive plugged in?"
+            f"{target} folder not accessible: {drive_root} — is the drive plugged in?"
         )
+    # backup-drive layout: titles land in Movies/ or Series/ per their kind
+    # (internal storage keeps its existing layout — no subfolder hop)
+    dest_base = drive_root
+    if target == "external":
+        sub = config.EXTERNAL_SUBDIRS.get(title["kind"])
+        if sub:
+            dest_base = os.path.join(drive_root, sub)
+
+    def _rel(src: str, base: str) -> str:
+        """Path relative to `base`. On the way back from the backup drive,
+        the Movies//Series/ kind hop is stripped so titles restore their
+        original internal-storage layout."""
+        if target == "internal":
+            bk_root = fileops.backup_root()
+            for sub in config.EXTERNAL_SUBDIRS.values():
+                hop = os.path.join(bk_root, sub) + os.sep
+                if bk_root and src.startswith(hop):
+                    return os.path.relpath(src, hop)
+        return os.path.relpath(src, base)
 
     files = q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,))
     if not files:
@@ -99,7 +122,10 @@ def move_title(job_id: str, title_id: int, target: str):
             log(job_id, f"SKIP (outside all known roots): {src}")
             skipped += 1
             return
-        rel = os.path.relpath(src, base)
+        if src.startswith(dest_base.rstrip(os.sep) + os.sep):
+            skipped += 1  # already lives under the destination (sub)tree
+            return
+        rel = _rel(src, base)
         dest = os.path.join(dest_base, rel)
         if dest == src:
             skipped += 1
@@ -121,9 +147,9 @@ def move_title(job_id: str, title_id: int, target: str):
         moved += 1
 
     for (folder, base), fs in folders.items():
-        rel = os.path.relpath(folder, base)
+        rel = _rel(folder, base)
         dest = os.path.join(dest_base, rel)
-        if dest == folder:
+        if dest == folder or folder.startswith(dest_base.rstrip(os.sep) + os.sep):
             skipped += len(fs)  # already lives at the destination
         elif os.path.exists(dest):
             # destination folder already exists: move files one by one
@@ -164,11 +190,11 @@ def move_title(job_id: str, title_id: int, target: str):
                 "watched_at=COALESCE(watched_at, ?) WHERE id=?",
                 (_now(), title_id))
 
-    # the destination becomes a managed root so scans cover it and
+    # the destination drive becomes a managed root so scans cover it and
     # locations stay accurate (idempotent)
     if moved:
         with tx() as c:
-            c.execute("INSERT OR IGNORE INTO roots(path) VALUES(?)", (dest_base,))
+            c.execute("INSERT OR IGNORE INTO roots(path) VALUES(?)", (drive_root,))
 
     log(job_id, f"Move complete: {moved} moved, {skipped} skipped")
     update(job_id, message=f"Moved {moved} file(s), {skipped} skipped")

@@ -177,7 +177,8 @@ function renderRows() {
         ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
                    : `<div class="thumb ph">🎬</div>`}
         <div>
-          <div class="tname">${esc(t.title)}</div>
+          <div class="tname">${esc(t.title)}<button class="copybtn" data-copy="${esc(t.title)}"
+            title="Copy title to clipboard">⧉</button></div>
           <div style="margin-top:3px">
             <span class="badge ${t.kind}${t.is_miniseries ? " mini" : ""}" title="${kindTitle}">${kindLabel}</span>${nextBadge}${wantedBadge}${seenBadge}${calUpcoming}${calFinished}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
@@ -311,9 +312,37 @@ document.addEventListener("click", async e => {
     searchPerson(chip.dataset.person);
     return;
   }
+  const cp = e.target.closest("[data-copy]");
+  if (cp) {
+    e.stopPropagation();
+    copyTitle(cp);
+    return;
+  }
   const tr = e.target.closest("tr[data-id]");
   if (tr) openDrawer(+tr.dataset.id);
 });
+
+/* copy a title name to the clipboard (with fallback for non-secure origins) */
+async function copyTitle(btn) {
+  const text = btn.dataset.copy;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    btn.classList.add("ok");
+    btn.textContent = "✓";
+    setTimeout(() => { btn.classList.remove("ok"); btn.textContent = "⧉"; }, 1200);
+  } catch (err) { alert(`Could not copy "${text}": ${err.message}`); }
+}
 
 /* ---------- delete-choice popup ---------- */
 let delTarget = null;
@@ -459,8 +488,9 @@ async function openDrawer(id) {
     </div>
     <div class="moverow">
       <span class="mlab">Move to:</span>
-      <button class="btn mini" id="dMoveInt" title="Move files to the internal folder configured in Settings">💻 Internal</button>
-      <button class="btn mini" id="dMoveExt" title="Move files to the external drive configured in Settings">🔌 External</button>
+      ${t.storage_side === "external"
+        ? `<button class="btn mini" id="dMoveInt" title="Move files back to the internal folder configured in Settings">💻 Internal</button>`
+        : `<button class="btn mini" id="dMoveExt" title="Move files to the external drive (lands in its Movies/ or Series/ folder per the title's kind)">🔌 External</button>`}
     </div>
     <dl>
       ${t.rating_imdb ? `<dt>IMDb</dt><dd>★ ${t.rating_imdb} (${(t.votes_imdb || 0).toLocaleString()} votes)</dd>` : ""}
@@ -559,8 +589,10 @@ The move was queued and runs automatically when it is connected (Settings → Dr
       }
     } catch (err) { alert(err.message); }
   };
-  $("#dMoveInt").onclick = () => doMove("internal");
-  $("#dMoveExt").onclick = () => doMove("external");
+  const dMoveInt = $("#dMoveInt");
+  if (dMoveInt) dMoveInt.onclick = () => doMove("internal");
+  const dMoveExt = $("#dMoveExt");
+  if (dMoveExt) dMoveExt.onclick = () => doMove("external");
 
   // ---- edit details ----
   $("#eSave").onclick = async () => {

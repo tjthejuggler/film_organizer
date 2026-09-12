@@ -22,6 +22,14 @@ WATCH_NEXT_DIRS = {
     "series": "aaNext_Series",
 }
 
+# Backup drive (external_root) layout: moved titles land in the subfolder
+# matching their kind, so the drive stays organized (internal storage keeps
+# its existing layout).
+EXTERNAL_SUBDIRS = {
+    "movie": "Movies",
+    "series": "Series",
+}
+
 # z.ai (Zhipu) OpenAI-compatible endpoint + GLM flash model
 DEFAULT_SETTINGS = {
     "llm_base_url": "https://api.z.ai/api/paas/v4",

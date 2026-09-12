@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, drivequeue, duplicates, enrich, jobs, llm, mover, notifications, recommender, scanner, seasons, tmdb, watchnext
+from . import config, db, drivequeue, duplicates, enrich, fileops, jobs, llm, mover, notifications, recommender, scanner, seasons, tmdb, watchnext
 
 db.init()
 
@@ -338,6 +338,20 @@ def list_titles(
     return {"total": total, "titles": out, "genres": genres}
 
 
+def _storage_side(files: list) -> str:
+    """'external' when any accessible file already sits on the backup drive,
+    else 'internal' — tells the drawer which move button makes sense."""
+    ext = fileops.backup_root()
+    if ext:
+        ext = ext.rstrip(os.sep) + os.sep
+        for f in files:
+            if f["missing"]:
+                continue
+            if (os.path.abspath(f["path"]) + os.sep).startswith(ext):
+                return "external"
+    return "internal"
+
+
 @app.get("/api/titles/{tid}")
 def get_title(tid: int):
     row = _get_title_or_404(tid)
@@ -349,6 +363,7 @@ def get_title(tid: int):
         """SELECT DISTINCT r.path p FROM files f
            JOIN roots r ON f.path LIKE r.path || '%'
            WHERE f.title_id=? AND f.missing=0 ORDER BY r.path""", (tid,))]
+    d["storage_side"] = _storage_side(d["files"])
     return d
 
 
