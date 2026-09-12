@@ -176,6 +176,7 @@ def _title_payload(row) -> dict:
     d["favorite"] = bool(d.get("favorite"))
     d["watch_next"] = d.get("watch_next")  # 'movie' | 'series' | None
     d["is_miniseries"] = bool(d.get("is_miniseries"))
+    d["hidden"] = bool(d.get("hidden"))
     return d
 
 
@@ -216,9 +217,16 @@ def favicon():
 
 def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
                    root=None, missing_on=None, cert=None, person=None,
-                   wanted=None, seen=None):
+                   wanted=None, seen=None, hidden=None):
     """Shared WHERE builder so /api/titles and /api/stats agree exactly."""
     where, params = [], []
+    # hidden titles stay out of the default view; 'hidden=only' shows just
+    # them (how un-hiding works), 'hidden=all' mixes them back in. Nothing
+    # is ever deleted by hiding.
+    if hidden == "only":
+        where.append("t.hidden=1")
+    elif hidden != "all":
+        where.append("t.hidden=0")
     if q:
         # free-text spans identity AND people: "nolan" finds his films
         # (overview/description text is deliberately NOT searched)
@@ -271,11 +279,13 @@ def list_titles(
     match: str = None, genre: str = None,
     root: str = None, missing_on: str = None, cert: str = None,
     person: str = None, wanted: str = None, seen: str = None,
+    hidden: str = None,
     sort: str = "title", direction: str = "asc",
     limit: int = 10000, offset: int = 0,
 ):
     where, params = _filter_clause(q, kind, watched, match, genre,
-                                   root, missing_on, cert, person, wanted, seen)
+                                   root, missing_on, cert, person, wanted,
+                                   seen, hidden)
 
     ORDER = {
         "title": "t.title COLLATE NOCASE", "year": "t.year",
@@ -516,6 +526,17 @@ def set_wanted(tid: int, body: FlagIn):
     with db.tx() as c:
         c.execute("UPDATE titles SET wanted=? WHERE id=?", (1 if body.value else 0, tid))
     return {"ok": True, "wanted": body.value}
+
+
+@app.post("/api/titles/{tid}/hidden")
+def set_hidden(tid: int, body: FlagIn):
+    """Tuck a title away: excluded from the default list (the 'Hidden'
+    filter shows only these). Never deletes anything — files, watched
+    state and details all stay; un-hide any time."""
+    _get_title_or_404(tid)
+    with db.tx() as c:
+        c.execute("UPDATE titles SET hidden=? WHERE id=?", (1 if body.value else 0, tid))
+    return {"ok": True, "hidden": body.value}
 
 
 @app.get("/api/history")
@@ -793,8 +814,16 @@ def decide_notification(nid: int, body: NotificationDecisionIn):
 def seasons_calendar():
     """Everything the calendar popup shows: announced dates (with release
     pattern all-at-once vs weekly + the full date range), vague windows
-    waiting for an exact date, and finished series."""
+    waiting for an exact date, and finished series. Entries changed since
+    the last calendar open carry is_new=true."""
     return {"entries": seasons.calendar_entries()}
+
+
+@app.post("/api/seasons/calendar/opened")
+def seasons_calendar_opened():
+    """Baseline for 'what is new': everything the calendar shows right now
+    counts as looked-at; only later changes light the badge again."""
+    return seasons.mark_calendar_opened()
 
 
 @app.get("/api/seasons/recent")
@@ -1404,11 +1433,13 @@ def stats(
     match: str = None, genre: str = None,
     root: str = None, missing_on: str = None, cert: str = None,
     person: str = None, wanted: str = None, seen: str = None,
+    hidden: str = None,
 ):
     """Counts reflect the CURRENT FILTER (same params as /api/titles),
     with a watched/unwatched breakdown of the filtered set."""
     where, params = _filter_clause(q, kind, watched, match, genre,
-                                   root, missing_on, cert, person, wanted, seen)
+                                   root, missing_on, cert, person, wanted,
+                                   seen, hidden)
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     r = db.q1(
         f"""SELECT COUNT(*) n,

@@ -76,10 +76,21 @@ def _recent_span(rc: dict) -> tuple:
     return "weekly", end
 
 
+# fields whose actual change means "new information" for the user — they
+# drive the calendar's NEW badge/highlight. Bookkeeping columns (checked_at,
+# next_check_at, source, note) deliberately never count.
+INFO_COLS = ("status", "release_kind", "release_start", "release_end",
+             "window_hint", "finished")
+
+
 def upsert(title_id: int, season: int, force: bool = False, **fields):
     """Insert or update one season_watch row. By default a firmer status
     never clobbers (done > announced > vague); force=True bypasses that for
-    revivals (a 'finished' show whose next season just got announced)."""
+    revivals (a 'finished' show whose next season just got announced).
+    Whenever an APPLIED write really changes an informational field
+    (vague -> dated, shifted dates, new season, finished, ...) the row's
+    changed_at is stamped so the calendar can flag it as new since the
+    user last looked."""
     rank = {"done": 2, "announced": 1, "vague": 0}
     existing = q1("SELECT * FROM season_watch WHERE title_id=? AND season=?",
                   (title_id, season))
@@ -97,11 +108,16 @@ def upsert(title_id: int, season: int, force: bool = False, **fields):
                     sets.append(f"{k}=?")
                     vals.append(v)
                 if sets:
+                    if any(k in INFO_COLS and existing[k] != v
+                           for k, v in fields.items()):
+                        sets.append("changed_at=?")
+                        vals.append(_now())
                     c.execute(f"UPDATE season_watch SET {', '.join(sets)} "
                               f"WHERE id=?", vals + [existing["id"]])
         else:
-            keys = ["title_id", "season", "created_at"] + list(fields)
-            vals = [title_id, season, _now()] + list(fields.values())
+            keys = ["title_id", "season", "created_at", "changed_at"] \
+                + list(fields)
+            vals = [title_id, season, _now(), _now()] + list(fields.values())
             c.execute(
                 f"INSERT INTO season_watch({', '.join(keys)}) "
                 f"VALUES({', '.join('?' * len(keys))})", vals)
@@ -214,9 +230,10 @@ def _mark_finished(title_id: int):
             # finished rows keep a SLOW monthly re-check: if the show is
             # ever revived (TMDB announces a new season) the poll revives
             # the row instead of staying finished forever
+            # (a finale airing IS new information -> stamp changed_at)
             c.execute("UPDATE season_watch SET status='done', finished=1, "
-                      "next_check_at=?, checked_at=? WHERE id=?",
-                      (_in_days(30), _now(), r["id"]))
+                      "next_check_at=?, checked_at=?, changed_at=? WHERE id=?",
+                      (_in_days(30), _now(), _now(), r["id"]))
 
 
 # ---- weekly poll ------------------------------------------------------------
@@ -477,7 +494,10 @@ def calendar_entries() -> list:
 
     Defensive dedup: when the same show exists as several titles rows
     (episode-rip junk), only the OLDEST row's season entry is shown so the
-    popup never lists one season once per duplicate row."""
+    popup never lists one season once per duplicate row.
+    Each entry carries is_new: its information changed after the user last
+    opened the calendar (cal_opened_at) — drives the badge + NEW highlights."""
+    opened = db.settings_get("cal_opened_at")
     rows = q("""SELECT s.*, t.title, t.poster, t.year, t.network, t.tmdb_id
                 FROM season_watch s JOIN titles t ON t.id=s.title_id
                 WHERE NOT EXISTS (
@@ -500,6 +520,7 @@ def calendar_entries() -> list:
                 d["days_until"] = (rs - today).days
             except ValueError:
                 pass
+        d["is_new"] = bool(opened) and (d.get("changed_at") or "") > opened
         out.append(d)
     return out
 
@@ -509,8 +530,10 @@ def recent_entries() -> list:
     series the user has watched (partly), whose latest released season is
     not marked seen yet. One entry per show — duplicate title rows of the
     same show are deduped by tmdb_id (oldest row wins) and only the MOST
-    RECENT released season per title is listed, sorted newest first."""
+    RECENT released season per title is listed, sorted newest first.
+    is_new works like in calendar_entries: info arrived after the last look."""
     since, today = _recent_since(), _today()
+    opened = db.settings_get("cal_opened_at")
     watched = ("(CASE WHEN t.watched_manual IS NOT NULL "
                "THEN t.watched_manual ELSE t.watched_folder END)=1 "
                "OR t.history=1")
@@ -518,6 +541,7 @@ def recent_entries() -> list:
               "AND COALESCE(s.release_end, s.release_start)>=?")
     rows = q(f"""SELECT s.id, s.title_id, s.season, s.status, s.finished,
                         s.release_kind, s.release_start, s.release_end,
+                        s.changed_at,
                         t.title, t.poster, t.year, t.network, t.tmdb_id
                  FROM season_watch s JOIN titles t ON t.id=s.title_id
                  WHERE s.seen=0
@@ -558,6 +582,7 @@ def recent_entries() -> list:
         # no end date on a tracked season means it is still going (the
         # sweep only leaves the end blank while episodes keep airing)
         d["airing"] = end_d is None or end_d >= today_d
+        d["is_new"] = bool(opened) and (d.get("changed_at") or "") > opened
         out.append(d)
     return out
 
@@ -569,6 +594,15 @@ def mark_season_seen(entry_id: int, seen: bool = True) -> dict:
         c.execute("UPDATE season_watch SET seen=? WHERE id=?",
                   (1 if seen else 0, entry_id))
     return {"id": entry_id, "seen": bool(seen)}
+
+
+def mark_calendar_opened() -> dict:
+    """The user just opened the calendar popup: everything it currently
+    shows counts as looked-at. Only information that CHANGES after this
+    moment (vague -> dated, new dates, new season, finished, ...) lights
+    the badge and the NEW highlights again."""
+    db.settings_set("cal_opened_at", _now())
+    return {"ok": True}
 
 
 def flags_for_titles(title_ids: list) -> dict:

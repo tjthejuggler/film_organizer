@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Film Organizer</title>
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css?v=11">
+<link rel="stylesheet" href="/style.css?v=13">
 </head>
 <body>
 <header>
@@ -18,20 +18,21 @@
     <input id="search" type="search" placeholder="Search title, overview, director, actors…" autocomplete="off">
     <button id="btnRecommend" class="btn primary" title="Serve the next AI-researched recommendation">
       🎲 Recommend <span id="recCount" class="recpill hidden"></span></button>
-    <button id="btnScan" class="btn" title="Re-scan all enabled library roots">⟳</button>
-    <button id="btnEnrich" class="btn" title="Fetch metadata for unmatched titles">✨</button>
+    <button id="btnScan" class="btn iconbtn" title="Re-scan all enabled library roots">⟳</button>
+    <button id="btnEnrich" class="btn iconbtn" title="Fetch metadata for unmatched titles">✨</button>
     <span class="bellwrap">
-      <button id="btnBell" class="btn ghost bell" title="Notifications — decisions waiting for you">
+      <button id="btnBell" class="btn ghost bell iconbtn" title="Notifications — decisions waiting for you">
         🔔<span id="bellCount" class="bellpill hidden"></span></button>
       <div id="notifPanel" class="notifpanel hidden"></div>
     </span>
     <span class="bellwrap">
-      <button id="btnCalendar" class="btn ghost bell" title="Season calendar — upcoming seasons of series you watch">
+      <button id="btnCalendar" class="btn ghost bell iconbtn" title="Season calendar — upcoming seasons of series you watch">
         📅<span id="calCount" class="bellpill hidden"></span></button>
       <div id="calPanel" class="notifpanel calpanel hidden"></div>
     </span>
-    <button id="btnHistory" class="btn ghost" title="Record a movie/series you've seen without owning the file">👁</button>
-    <button id="btnSettings" class="btn ghost settings-gear" title="Settings — API keys, library roots, storage folders">⚙</button>
+    <button id="btnHistory" class="btn ghost iconbtn" title="Record a movie/series you've seen without owning the file">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+    <button id="btnSettings" class="btn ghost iconbtn" title="Settings — API keys, library roots, storage folders">⚙</button>
   </div>
 </header>
 
@@ -53,6 +54,11 @@
     <option value="">Wanted: all</option>
     <option value="only">Wanted only</option>
     <option value="hide">Hide wanted</option>
+  </select>
+  <select id="hiddenSel" title="Hidden titles are tucked away, not deleted — un-hide via the 🙈/👁 button">
+    <option value="">Hidden: not shown</option>
+    <option value="only">Hidden only</option>
+    <option value="all">Include hidden</option>
   </select>
   <select id="seenSel" title="Show only the seen log — titles recorded as watched without a file">
     <option value="">Seen log: all</option>
@@ -251,6 +257,6 @@
   <pre id="tLog"></pre>
 </div>
 
-<script src="/app.js?v=14"></script>
+<script src="/app.js?v=15"></script>
 </body>
 </html>

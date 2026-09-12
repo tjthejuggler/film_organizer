@@ -37,6 +37,23 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-12** — **calendar shows only what's actually NEW + hide-without-delete**:
+  the 📅 badge used to show every upcoming season, so an "8" that never went away
+  felt like unread news. Now each `season_watch` row carries `changed_at` (stamped
+  whenever its information really changes: vague window promoted to exact dates,
+  dates shifted, new season announced, series finished) and the pill counts only
+  entries changed since you last opened the popup (`cal_opened_at` baseline, set
+  right after the data loads — `POST /api/seasons/calendar/opened`). Inside the
+  popup those entries get a green edge + **NEW** chip so you can see what's new at
+  a glance. All header icon buttons (⟳ scan, ✨ enrich, 🔔, 📅, 👁 seen-log, ⚙)
+  are now uniform 38px squares (`.iconbtn`) with glyphs that nearly fill the box,
+  and the seen-log got a cleaner stroked SVG eye. Separately,
+  every title row has a **🙈/👁** button to hide a title without deleting anything:
+  hidden rows leave the default list (`titles.hidden` column), a **Hidden:**
+  dropdown filter (default "not shown") reveals them via *Hidden only*, and
+  *Include hidden* mixes them back in (`POST /api/titles/{id}/hidden`,
+  `hidden=only|all` filter param on `/api/titles` + `/api/stats`).
+
 - **2026-09-12** — **organized backup drive + smarter Move buttons**: moves to
   the external drive now land in kind-based subfolders — movies in `Movies/`,
   series in `Series/` — so the backup drive stays browsable (internal storage

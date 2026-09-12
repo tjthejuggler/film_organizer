@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS titles(
     watched_manual INTEGER,
     watched_at     TEXT,
     history        INTEGER DEFAULT 0,
+    hidden         INTEGER DEFAULT 0,  -- tucked away: excluded from the default list, never deleted
     last_seen      TEXT,
     size_bytes     INTEGER DEFAULT 0,
     created_at     TEXT
@@ -185,6 +186,7 @@ CREATE TABLE IF NOT EXISTS season_watch(
     note           TEXT,
     next_check_at  TEXT,            -- when to re-query for a real date (vague rows)
     checked_at     TEXT,            -- last lookup of ANY kind
+    changed_at     TEXT,            -- info last changed -> calendar NEW badge/highlight
     created_at     TEXT,
     UNIQUE(title_id, season)
 );
@@ -233,10 +235,18 @@ def ensure():
         # miniseries and filterable via the genre dropdown
         if "is_miniseries" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN is_miniseries INTEGER DEFAULT 0")
-        # season_watch.seen: user watched a specific season (catch-up list);
-        # fresh DBs get the column from SCHEMA, old ones migrate here
-        if "seen" not in {r[1] for r in con.execute("PRAGMA table_info(season_watch)")}:
+        # hidden: tucked-away rows — excluded from the default list, never
+        # deleted; reachable again via the Hidden filter
+        if "hidden" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN hidden INTEGER DEFAULT 0")
+        # season_watch.seen / changed_at: catch-up flag + info-change stamp
+        # (drives the calendar NEW badge/highlight); fresh DBs get both
+        # from SCHEMA, old ones migrate here
+        sw_cols = {r[1] for r in con.execute("PRAGMA table_info(season_watch)")}
+        if "seen" not in sw_cols:
             con.execute("ALTER TABLE season_watch ADD COLUMN seen INTEGER DEFAULT 0")
+        if "changed_at" not in sw_cols:
+            con.execute("ALTER TABLE season_watch ADD COLUMN changed_at TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS idx_season_watch_seen "
                     "ON season_watch(seen)")
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}

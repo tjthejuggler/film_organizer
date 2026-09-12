@@ -4,7 +4,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
 const state = {
   q: "", kind: "", watched: "", genre: "", root: "", match: "!not_found", missing: false,
-  wanted: "", seen: "",
+  wanted: "", seen: "", hidden: "",
   sort: "title", dir: "asc",
   titles: [], genres: [],
 };
@@ -12,10 +12,10 @@ const state = {
 /* ---------- UI state persistence (survives refresh & restart) ---------- */
 const STATE_KEY = "film_organizer_ui_state";
 function saveState() {
-  const { q, kind, watched, genre, root, match, missing, wanted, seen, sort, dir } = state;
+  const { q, kind, watched, genre, root, match, missing, wanted, seen, hidden, sort, dir } = state;
   try {
     localStorage.setItem(STATE_KEY,
-      JSON.stringify({ q, kind, watched, genre, root, match, missing, wanted, seen, sort, dir }));
+      JSON.stringify({ q, kind, watched, genre, root, match, missing, wanted, seen, hidden, sort, dir }));
   } catch (e) { /* private mode etc. — persistence is best-effort */ }
 }
 function restoreState() {
@@ -82,6 +82,7 @@ async function load() {
   if (state.missing) p.set("missing_on", "1");
   if (state.wanted) p.set("wanted", state.wanted);
   if (state.seen) p.set("seen", state.seen);
+  if (state.hidden) p.set("hidden", state.hidden);
   p.set("sort", state.sort); p.set("direction", state.dir);
   // stats use the SAME filter params (minus sort) so the top bar reflects
   // everything that made it through the current filter
@@ -155,6 +156,7 @@ function renderRows() {
       `<span class="badge genre">${esc(g)}</span>`).join("");
     const wantedBadge = t.wanted ? '<span class="badge wanted" title="On the wishlist — submitted via API or toggled here">★ wanted</span>' : "";
     const seenBadge = t.history ? '<span class="badge seen" title="Seen log — watched but no file owned">👁 seen</span>' : "";
+    const hiddenBadge = t.hidden ? '<span class="badge hiddenbadge" title="Hidden — out of the default list, not deleted">🙈 hidden</span>' : "";
     // season calendar chips: upcoming season announced/vague, or finished
     const calUpcoming = t.season_upcoming
       ? `<span class="badge cal" title="Next season on the season calendar (📅 in the top bar)">${esc(t.season_upcoming)}</span>` : "";
@@ -172,7 +174,7 @@ function renderRows() {
     // a dedicated badge just cluttered the title line
     const nextBadge = isNext
       ? '<span class="badge next" title="Pinned as Watch Next — copy sits in the aaNext folder inside the internal storage">▶ next</span>' : "";
-    return `<tr data-id="${t.id}" class="${isNext ? "is-next" : ""}${isOnline ? " is-online" : ""}${t.wanted ? " is-wanted" : ""}${t.history ? " is-history" : ""}${allOff ? " is-offline" : ""}">
+    return `<tr data-id="${t.id}" class="${isNext ? "is-next" : ""}${isOnline ? " is-online" : ""}${t.wanted ? " is-wanted" : ""}${t.history ? " is-history" : ""}${allOff ? " is-offline" : ""}${t.hidden ? " is-hidden" : ""}">
       <td><div class="tcell">
         ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
                    : `<div class="thumb ph">🎬</div>`}
@@ -180,7 +182,7 @@ function renderRows() {
           <div class="tname">${esc(t.title)}<button class="copybtn" data-copy="${esc(t.title)}"
             title="Copy title to clipboard">⧉</button></div>
           <div style="margin-top:3px">
-            <span class="badge ${t.kind}${t.is_miniseries ? " mini" : ""}" title="${kindTitle}">${kindLabel}</span>${nextBadge}${wantedBadge}${seenBadge}${calUpcoming}${calFinished}${matchBadge}
+            <span class="badge ${t.kind}${t.is_miniseries ? " mini" : ""}" title="${kindTitle}">${kindLabel}</span>${nextBadge}${wantedBadge}${seenBadge}${hiddenBadge}${calUpcoming}${calFinished}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
             ${genreTags}
           </div>
@@ -201,6 +203,8 @@ function renderRows() {
       <td class="actions">
         <button class="wbtn fav ${t.favorite ? "on" : ""}" data-fav="${t.id}"
           title="${t.favorite ? "Remove from favorites" : "Mark as favorite"}">♥</button>
+        <button class="wbtn hide ${t.hidden ? "on" : ""}" data-hide="${t.id}"
+          title="${t.hidden ? "Un-hide — back in the list" : "Hide — tuck away without deleting (Hidden filter shows it)"}">${t.hidden ? "👁" : "🙈"}</button>
         <button class="wbtn next ${isNext ? "on" : ""}${watched ? " watched" : ""}" data-next="${t.id}"
           title="${isNext ? "Unpin from Watch Next" : "Set as Watch Next — copies it to the aaNext folder on internal storage and pins it to the top"}">▶</button>
         <button class="wbtn ${watched ? "on" : ""}" data-watched="${t.id}"
@@ -237,6 +241,7 @@ $$("#watchChips .chip").forEach(c => c.addEventListener("click", () => {
 $("#genreSel").addEventListener("change", e => { state.genre = e.target.value; load(); });
 $("#rootSel").addEventListener("change", e => { state.root = e.target.value; load(); });
 $("#wantedSel").addEventListener("change", e => { state.wanted = e.target.value; load(); });
+$("#hiddenSel").addEventListener("change", e => { state.hidden = e.target.value; load(); });
 $("#seenSel").addEventListener("change", e => { state.seen = e.target.value; load(); });
 $("#matchSel").addEventListener("change", e => { state.match = e.target.value; load(); });
 $("#onlyMissing").addEventListener("change", e => { state.missing = e.target.checked; load(); });
@@ -303,6 +308,21 @@ document.addEventListener("click", async e => {
       await api(`/api/titles/${id}/favorite`, { method: "POST", body: { value: !t.favorite } });
       t.favorite = !t.favorite;
       renderRows();
+    } catch (err) { alert(err.message); }
+    return;
+  }
+  const hbtn = e.target.closest("[data-hide]");
+  if (hbtn) {
+    e.stopPropagation();
+    const id = hbtn.dataset.hide;
+    const t = state.titles.find(x => String(x.id) === String(id));
+    try {
+      const r = await api(`/api/titles/${id}/hidden`, { method: "POST", body: { value: !t.hidden } });
+      t.hidden = r.hidden;
+      // hiding in the default view makes the row drop out (server filter
+      // excludes hidden) -> full reload; in Hidden-only view it stays put
+      if (t.hidden && state.hidden !== "only") load();
+      else renderRows();
     } catch (err) { alert(err.message); }
     return;
   }
@@ -1327,11 +1347,11 @@ function renderRecentItem(e) {
   const poster = e.poster
     ? `<img class="thumb" loading="lazy" src="${esc(e.poster)}">`
     : `<div class="thumb ph">🎬</div>`;
-  return `<div class="notifitem calitem cal-recent" data-open-title="${e.title_id}">
+  return `<div class="notifitem calitem cal-recent${e.is_new ? " cal-new" : ""}" data-open-title="${e.title_id}">
     <div class="ntop">
       ${poster}
       <div>
-        <div class="ntitle">${esc(e.title)}</div>
+        <div class="ntitle">${esc(e.title)}${e.is_new ? ' <span class="newchip">NEW</span>' : ""}</div>
         <div class="nmeta">S${e.season} · <b>${esc(calRecentWhen(e))}</b>
           ${e.release_kind === "all_at_once" ? " · all at once" : ""}</div>
         ${e.note ? `<div class="nmeta dim">${esc(e.note)}</div>` : ""}
@@ -1351,11 +1371,11 @@ function renderCalItem(e) {
   const poster = e.poster
     ? `<img class="thumb" loading="lazy" src="${esc(e.poster)}">`
     : `<div class="thumb ph">🎬</div>`;
-  return `<div class="notifitem calitem cal-${esc(e.status)}" data-open-title="${e.title_id}">
+  return `<div class="notifitem calitem cal-${esc(e.status)}${e.is_new ? " cal-new" : ""}" data-open-title="${e.title_id}">
     <div class="ntop">
       ${poster}
       <div>
-        <div class="ntitle">${esc(e.title)}</div>
+        <div class="ntitle">${esc(e.title)}${e.is_new ? ' <span class="newchip">NEW</span>' : ""}</div>
         <div class="nmeta">S${e.season} · <b>${esc(when)}</b>
           ${pattern ? `· ${esc(pattern)}` : ""}${days ? ` · ${esc(days)}` : ""}</div>
         ${e.note ? `<div class="nmeta dim">${esc(e.note)}</div>` : ""}
@@ -1372,9 +1392,13 @@ async function toggleCalPanel() {
   }
   panel.classList.remove("hidden");
   panel.innerHTML = '<div class="notifdone">Loading…</div>';
+  // fetch FIRST, stamp the looked-at baseline AFTER: this open still shows
+  // everything that arrived since the last look; anything that changes
+  // from now on lights the pill + NEW highlights again
   const [{ entries }, recent] = await Promise.all([
     api("/api/seasons/calendar"), api("/api/seasons/recent"),
   ]);
+  api("/api/seasons/calendar/opened", { method: "POST" }).catch(() => null);
   // upcoming = announced rows whose date is still in the future (past-dated
   // announced rows are recently-released seasons — the section above), plus
   // vague windows; done rows go to their own section
@@ -1430,9 +1454,11 @@ async function refreshCalPill() {
     const [{ entries }, recent] = await Promise.all([
       api("/api/seasons/calendar"), api("/api/seasons/recent"),
     ]);
-    const n = entries.filter(e => e.status === "announced"
-        && (e.days_until === undefined || e.days_until >= 0)).length
-      + (recent.entries || []).length;
+    // the pill counts NEW information only (vague -> dated, shifted dates,
+    // new season, finished...) — info that arrived since the calendar was
+    // last opened. Stale-but-unwatched entries do not nag.
+    const n = entries.filter(e => e.is_new).length
+      + (recent.entries || []).filter(e => e.is_new).length;
     const pill = $("#calCount");
     pill.textContent = n > 9 ? "9+" : n;
     pill.classList.toggle("hidden", n === 0);
@@ -1558,6 +1584,7 @@ restoreState();
 $("#search").value = state.q;
 $("#matchSel").value = state.match;
 $("#wantedSel").value = state.wanted;
+$("#hiddenSel").value = state.hidden || "";
 $("#seenSel").value = state.seen;
 $("#onlyMissing").checked = !!state.missing;
 $$("#kindChips .chip").forEach(c => c.classList.toggle("on", (c.dataset.kind || "") === state.kind));
