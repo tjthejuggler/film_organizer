@@ -8,7 +8,7 @@ deletes makes accidentally wiping a huge shared directory impossible.
 """
 import os
 
-from . import db
+from . import config, db
 from .db import q1
 
 SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".sub", ".vtt", ".idx", ".sup"}
@@ -41,13 +41,25 @@ def like_under(folder: str) -> str:
 def dedicated_folder(path: str, base: str, title_id: int):
     """Highest ancestor directory of `path` (still under `base`) that holds
     no cataloged files of any OTHER title — the title's own release folder.
-    None when the file sits directly in a shared root (or outside base)."""
+    None when the file sits directly in a shared root (or outside base).
+
+    The walk never claims a backup-drive kind hop (Movies/ or Series/):
+    on a drive hosting a single title that folder looks 'dedicated' but is
+    shared layout — moving/deleting it wholesale would destroy the layout
+    (Movies -> Movies/Movies, or wiping every sibling release)."""
     if not base:
         return None
     base = os.path.abspath(base)
+    hops = set()
+    bk = backup_root()
+    if bk:
+        hops = {os.path.normpath(os.path.join(bk, s))
+                for s in config.EXTERNAL_SUBDIRS.values()}
     folder = None
     d = os.path.dirname(os.path.abspath(path))
     while d.startswith(base + os.sep):
+        if os.path.normpath(d) in hops:
+            break
         foreign = q1("SELECT COUNT(*) n FROM files "
                      "WHERE path LIKE ? AND title_id != ? AND missing=0",
                      (like_under(d), title_id))["n"]

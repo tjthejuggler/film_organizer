@@ -508,9 +508,12 @@ async function openDrawer(id) {
     </div>
     <div class="moverow">
       <span class="mlab">Move to:</span>
-      ${t.storage_side === "external"
-        ? `<button class="btn mini" id="dMoveInt" title="Move files back to the internal folder configured in Settings">💻 Internal</button>`
-        : `<button class="btn mini" id="dMoveExt" title="Move files to the external drive (lands in its Movies/ or Series/ folder per the title's kind)">🔌 External</button>`}
+      ${(t.on_both_drives
+        ? `<button class="btn mini" id="dMoveInt" title="Consolidate on internal storage — the external copy moves back and every leftover duplicate copy is deleted, so the title ends up in ONE place only">💻 Internal</button>
+      <button class="btn mini" id="dMoveExt" title="Consolidate on the external drive — the internal copy moves over (Movies/ or Series/ per kind) and every leftover duplicate copy is deleted, so the title ends up in ONE place only">🔌 External</button>`
+        : t.storage_side === "external"
+          ? `<button class="btn mini" id="dMoveInt" title="Move files back to the internal folder configured in Settings">💻 Internal</button>`
+          : `<button class="btn mini" id="dMoveExt" title="Move files to the external drive (lands in its Movies/ or Series/ folder per the title's kind)">🔌 External</button>`)}
     </div>
     <dl>
       ${t.rating_imdb ? `<dt>IMDb</dt><dd>★ ${t.rating_imdb} (${(t.votes_imdb || 0).toLocaleString()} votes)</dd>` : ""}
@@ -598,9 +601,11 @@ async function openDrawer(id) {
   };
   const doMove = async target => {
     const label = target === "internal" ? "internal" : "external";
-    if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to the ${label} folder?`)) return;
+    const dupNote = t.on_both_drives
+      ? `\n\nThis title is duplicated on BOTH drives — after the move only the ${label} copy remains; copies on the other drive are deleted.` : "";
+    if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to the ${label} folder?${dupNote}`)) return;
     try {
-      const r = await api(`/api/titles/${id}/move`, { method: "POST", body: { target } });
+      const r = await api(`/api/titles/${id}/move`, { method: "POST", body: { target, purge_others: true } });
       if (r.queued) {
         alert(`The ${label} drive (${r.drive}) is not connected right now.
 The move was queued and runs automatically when it is connected (Settings → Drive queues).`);

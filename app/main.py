@@ -149,6 +149,7 @@ class ExtWatchedIn(BaseModel):
 
 class MoveIn(BaseModel):
     target: str  # "internal" | "external"
+    purge_others: bool = False  # consolidation: also delete copies on the other side
 
 
 class RecDecideIn(BaseModel):
@@ -348,18 +349,26 @@ def list_titles(
     return {"total": total, "titles": out, "genres": genres}
 
 
-def _storage_side(files: list) -> str:
-    """'external' when any accessible file already sits on the backup drive,
-    else 'internal' — tells the drawer which move button makes sense."""
+def _storage_sides(files: list) -> set:
+    """{'internal','external'} sides where this title's accessible files
+    live — both sides at once means a duplicated title, and the drawer
+    then offers BOTH move buttons (either click consolidates)."""
     ext = fileops.backup_root()
     if ext:
         ext = ext.rstrip(os.sep) + os.sep
-        for f in files:
-            if f["missing"]:
-                continue
-            if (os.path.abspath(f["path"]) + os.sep).startswith(ext):
-                return "external"
-    return "internal"
+    sides = set()
+    for f in files:
+        if f["missing"]:
+            continue
+        on_ext = bool(ext) and (os.path.abspath(f["path"]) + os.sep).startswith(ext)
+        sides.add("external" if on_ext else "internal")
+    return sides
+
+
+def _storage_side(files: list) -> str:
+    """'external' when any accessible file already sits on the backup drive,
+    else 'internal' — tells the drawer which move button makes sense."""
+    return "external" if "external" in _storage_sides(files) else "internal"
 
 
 @app.get("/api/titles/{tid}")
@@ -374,6 +383,7 @@ def get_title(tid: int):
            JOIN roots r ON f.path LIKE r.path || '%'
            WHERE f.title_id=? AND f.missing=0 ORDER BY r.path""", (tid,))]
     d["storage_side"] = _storage_side(d["files"])
+    d["on_both_drives"] = len(_storage_sides(d["files"])) > 1
     return d
 
 
@@ -1088,7 +1098,8 @@ def move_title(tid: int, body: MoveIn):
     if dest and not os.path.isdir(os.path.abspath(dest)):
         dest = os.path.abspath(dest)
         qid, created = drivequeue.enqueue(
-            "move", tid, dest, {"target": body.target},
+            "move", tid, dest,
+            {"target": body.target, "purge_others": body.purge_others},
             f"Move '{row['title']}' to {dest}")
         return {"job_id": None, "queued": True, "queue_id": qid,
                 "queued_now": created, "drive": dest}
@@ -1100,7 +1111,8 @@ def move_title(tid: int, body: MoveIn):
     def _run(job):
         error = None
         try:
-            mover.move_title(job, tid, body.target)
+            mover.move_title(job, tid, body.target,
+                             purge_others=body.purge_others)
             lut_sync.request_sync("move")   # voice fast-path follows the file
         except Exception as e:
             jobs.log(job, f"FAILED: {e}")

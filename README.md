@@ -256,6 +256,20 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-13 (15)** — **duplicate titles consolidate on move**: a title
+  that lives on BOTH drives now shows **both** move buttons in its drawer
+  (💻 Internal and 🔌 External), and whichever you pick leaves the title in
+  exactly ONE place: the copy on the other drive is deleted after the move
+  (release folders with Subs/sidecars go too, unplugged drives are left
+  alone, the confirm dialog warns about the deletion). Implementation:
+  [`mover.move_title(purge_others=True)`](app/mover.py) +
+  `_purge_leftovers()`; backup notifications keep the old copy-preserving
+  behavior (`purge_others` defaults False, honoured by the drive queue
+  too). Root-cause fix: [`fileops.dedicated_folder()`](app/fileops.py) no
+  longer claims a backup drive's `Movies/`/`Series/` hop as a title's
+  "dedicated folder" on single-title drives — that used to make moves plan
+  `Movies → Movies/Movies` and let duplicate-deletion threaten the layout
+  folder.
 - **2026-09-13 (14)** — **native system move dialog**: Move to
   internal/external now shows Plasma's **standard file-transfer progress
   dialog** — the same one Dolphin's moves live in — with real byte/file

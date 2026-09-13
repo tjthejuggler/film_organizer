@@ -40,7 +40,16 @@ def src_base(path: str):
     return max(cands, key=len) if cands else None
 
 
-def move_title(job_id: str, title_id: int, target: str):
+def move_title(job_id: str, title_id: int, target: str,
+               purge_others: bool = False):
+    """Move a title to the 'internal' or 'external' side.
+
+    purge_others=True upgrades the move to a CONSOLIDATION (the drawer's
+    move buttons): after relocating, leftover copies of the title that
+    still sit on the other side are deleted, so it ends up in exactly one
+    place. Backup-style callers (notifications, queued moves without the
+    flag) keep the copy-preserving semantics.
+    """
     from .jobs import log, update
 
     title = q1("SELECT * FROM titles WHERE id=?", (title_id,))
@@ -133,10 +142,44 @@ def move_title(job_id: str, title_id: int, target: str):
                     "UPDATE files SET path=?, created=COALESCE(created, ?) WHERE id=?",
                     (new_path_of(f), f["created"], f["id"]))
 
+    def _on_target_drive(p: str) -> bool:
+        """Already physically on the destination drive (any subfolder —
+        canonical kind hop not required)."""
+        return p.startswith(drive_root.rstrip(os.sep) + os.sep)
+
+    def _dedupe_key(f) -> tuple:
+        """Identity of a file for twin-matching: (season, episode) for
+        cataloged episodes, else the lowercase filename stem."""
+        if f["season"] is not None and f["episode"] is not None:
+            return ("ep", f["season"] or 1, f["episode"])
+        return ("stem", os.path.splitext(os.path.basename(f["path"]))[0].lower())
+
+    # consolidation: identities already present on the destination drive —
+    # matching files on the OTHER side are duplicates and get purged rather
+    # than re-homed (real drives may hold copies outside the canonical kind
+    # folder, e.g. aaSeries/, and the twin is already where the user wants)
+    target_keys = set()
+    if purge_others:
+        for f in files:
+            p = os.path.abspath(f["path"])
+            if _on_target_drive(p) and os.path.exists(p):
+                target_keys.add(_dedupe_key(f))
+
     def _move_one(f) -> None:
         """Move a single video file plus its same-stem sidecar files."""
         nonlocal moved, skipped
         src = os.path.abspath(f["path"])
+        # consolidation: a copy already on the destination DRIVE is where it
+        # belongs — leave it exactly where it is, do not re-home it into the
+        # canonical kind folder (its real layout may differ, e.g. aaSeries/)
+        if purge_others and _on_target_drive(src):
+            skipped += 1
+            return
+        # twin of a file already on the target drive -> not moved; the
+        # post-move purge removes this stale duplicate
+        if purge_others and _dedupe_key(f) in target_keys:
+            skipped += 1
+            return
         base = src_base(src)
         if not base:
             log(job_id, f"SKIP (outside all known roots): {src}")
@@ -169,9 +212,21 @@ def move_title(job_id: str, title_id: int, target: str):
         moved += 1
 
     for (folder, base), fs in folders.items():
+        if purge_others and _on_target_drive(folder):
+            skipped += len(fs)  # already on the target drive — leave in place
+            continue
+        if purge_others and any(_dedupe_key(f) in target_keys for f in fs):
+            # folder mixes twins and unique files: handle one by one so
+            # twins stay behind (for the purge) and uniques get moved
+            for f in fs:
+                _move_one(f)
+                _tick()
+            continue
         rel = _rel(folder, base)
         dest = os.path.join(dest_base, rel)
-        if dest == folder or folder.startswith(dest_base.rstrip(os.sep) + os.sep):
+        if (dest == folder
+                or folder.rstrip(os.sep) == dest_base.rstrip(os.sep)
+                or folder.startswith(dest_base.rstrip(os.sep) + os.sep)):
             skipped += len(fs)  # already lives at the destination
         elif os.path.exists(dest):
             # destination folder already exists: move files one by one
@@ -218,5 +273,55 @@ def move_title(job_id: str, title_id: int, target: str):
         with tx() as c:
             c.execute("INSERT OR IGNORE INTO roots(path) VALUES(?)", (drive_root,))
 
-    log(job_id, f"Move complete: {moved} moved, {skipped} skipped")
-    update(job_id, message=f"Moved {moved} file(s), {skipped} skipped")
+    # consolidation: files whose destination already existed were SKIPPED by
+    # the move loop (never deleted) — a duplicated title would otherwise end
+    # up with two copies on the target and the old one on the source drive
+    purged = _purge_leftovers(job_id, title_id, target) if purge_others else 0
+
+    tail = f", {purged} leftover(s) removed" if purged else ""
+    log(job_id, f"Move complete: {moved} moved, {skipped} skipped{tail}")
+    update(job_id, message=f"Moved {moved} file(s), {skipped} skipped{tail}")
+
+
+def _purge_leftovers(job_id: str, title_id: int, target: str) -> int:
+    """Delete copies of the title that STILL sit outside the target side.
+
+    Only physically present files on known, connected roots are touched —
+    a copy on an unplugged drive is left for the next visit. Deletion is
+    folder-aware (duplicates._delete_title_files) so Subs/, artwork and
+    .nfo sidecars of each doomed release folder go with it; the stored
+    title size is recomputed afterwards.
+    """
+    from . import duplicates
+    from .jobs import log
+
+    ext = fileops.backup_root()
+    if not ext:
+        return 0  # no external drive configured -> no 'other side' exists
+    ext = os.path.abspath(ext).rstrip(os.sep) + os.sep
+
+    def _side(p: str) -> str:
+        return "external" if os.path.abspath(p).startswith(ext) else "internal"
+
+    doomed = []
+    for f in q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,)):
+        if _side(f["path"]) == target:
+            continue  # this copy already lives where the user asked
+        base = src_base(f["path"])
+        if not base or not os.path.isdir(base):
+            continue  # unknown root or drive gone — never touch it here
+        if os.path.exists(f["path"]):
+            doomed.append(dict(f))
+    if not doomed:
+        return 0
+
+    log(job_id, f"Consolidating: removing {len(doomed)} leftover copy "
+                f"file(s) from the "
+                f"{'internal' if target == 'external' else 'external'} side")
+    duplicates._delete_title_files(doomed, title_id, delete_row=False)
+    with tx() as c:
+        c.execute(
+            "UPDATE titles SET size_bytes=(SELECT COALESCE(SUM(size_bytes),0) "
+            "FROM files WHERE title_id=? AND missing=0) WHERE id=?",
+            (title_id, title_id))
+    return len(doomed)
