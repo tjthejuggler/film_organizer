@@ -416,6 +416,8 @@ tr.is-hidden .tname { opacity: .6; }
 tr.is-hidden td { opacity: .85; }
 .wbtn.hide.on { background: #5b4a8f; border-color: #5b4a8f; color: #fff; }
 .wbtn.hide { font-size: 12px; }
+/* monkey stays greyscale until the hide toggle is selected (title hidden) */
+.wbtn.hide:not(.on) { filter: grayscale(1); }
 .calfoot {
   font-size: 11.5px; color: var(--dim); text-align: center; padding-top: 4px;
 }
