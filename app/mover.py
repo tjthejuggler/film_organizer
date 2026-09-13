@@ -14,7 +14,7 @@ import os
 import shutil
 from datetime import datetime, timezone
 
-from . import config, db, fileops, parser
+from . import config, db, fileops, kio, parser
 from .db import q, q1, tx
 
 
@@ -81,6 +81,26 @@ def move_title(job_id: str, title_id: int, target: str):
     if not files:
         raise ValueError("No accessible files to move for this title")
 
+    # native system move dialog: a helper process owns a Plasma JobView
+    # (the same progress dialog Dolphin's moves use) and does the transfer
+    # with real progress + pause/cancel. Settings off switch; quiet
+    # fallback when the desktop session is missing (headless, ssh, …).
+    native_wanted = db.settings_get("move_native_dialog", "1") != "0"
+    native = native_wanted and kio.available()
+    if native_wanted and not native:
+        log(job_id, "System move dialog unavailable (no desktop session) "
+                    "— moving quietly instead")
+
+    def _desktop_move(src: str, dest: str):
+        """src -> dest via the system file engine; shutil fallback."""
+        if not native:
+            shutil.move(src, dest)
+            return
+        ok, detail = kio.move(src, dest, title["title"])
+        if not ok:
+            raise RuntimeError(
+                f"system move failed or was cancelled: {detail or 'no detail'}")
+
     # --- plan: dedicated release folders as units, leftovers file-by-file ----
     folders: dict = {}  # (folder, base) -> [file rows]
     loose = []          # rows without a dedicated folder (or on dead roots)
@@ -135,13 +155,15 @@ def move_title(job_id: str, title_id: int, target: str):
             skipped += 1
             return
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.move(src, dest)
+        _desktop_move(src, dest)
         for sc in fileops.sidecar_paths(src):
             try:
-                shutil.move(sc, os.path.join(os.path.dirname(dest),
-                                             os.path.basename(sc)))
-            except OSError:
+                _desktop_move(sc, os.path.join(os.path.dirname(dest),
+                                               os.path.basename(sc)))
+            except Exception:
                 pass  # losing a sidecar must never fail the move
+                # (OSError from shutil, RuntimeError from a failed/cancelled
+                # native KIO move)
         _relocate([f], lambda _f: dest)
         fileops.prune_dirs(os.path.dirname(src), base)
         moved += 1
@@ -160,7 +182,7 @@ def move_title(job_id: str, title_id: int, target: str):
                 _tick()
         else:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.move(folder, dest)
+            _desktop_move(folder, dest)
             log(job_id, f"Moved folder (Subs etc. ride along): "
                         f"{os.path.basename(folder)} -> {dest}")
             _relocate(fs, lambda f: os.path.join(

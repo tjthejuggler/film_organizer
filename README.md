@@ -256,6 +256,25 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-13 (14)** — **native system move dialog**: Move to
+  internal/external now shows Plasma's **standard file-transfer progress
+  dialog** — the same one Dolphin's moves live in — with real byte/file
+  progress, transfer speed and working **pause/cancel**. How it works: a
+  standalone helper ([`app/kio_jobview.py`](app/kio_jobview.py), run under
+  the *system* python3 which has `python3-dbus`) requests a JobView from
+  `org.kde.JobViewServer` and performs the move itself — atomic
+  `os.rename` within a device, chunked copy + source delete across
+  devices — streaming progress into the dialog over D-Bus.
+  ([`app/kio.py`](app/kio.py) launches the helper with a guaranteed
+  session-bus address and parses its verdict; `kioclient` was tried first
+  but proven — via dbus-monitor — never to register with the job tracker,
+  so its moves are invisible.) Cancel cleans up the partial destination
+  and fails the job safely (catalog rows are only updated after a
+  successful move); sidecar loss still never fails a move. **Settings**
+  grew a *"Show system move dialog"* checkbox (`move_native_dialog`,
+  default on): turning it off — or running on a headless box without a
+  desktop session — restores the old silent `shutil.move` behaviour with
+  a note in the job log.
 - **2026-09-11 (13)** — **folder-aware moves & deletes + notification click
   actually feeling alive**: accepting "move to backup?" used to run the whole
   move synchronously inside the HTTP request — the click looked dead for

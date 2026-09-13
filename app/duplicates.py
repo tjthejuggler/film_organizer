@@ -175,6 +175,19 @@ def delete_copy(title_id: int, root: str = None):
                    if it has files elsewhere).
     root is None-> delete the whole title row + its files (used for
                    'possible' cross-title groups).
+    Either way the voice fast-path catalog is re-synced (reachability of
+    the title may have changed).
+    """
+    from . import lut_sync
+    try:
+        result = _delete_copy_impl(title_id, root)
+    finally:
+        lut_sync.request_sync("delete_copy")
+    return result
+
+
+def _delete_copy_impl(title_id: int, root: str = None):
+    """(Original delete_copy body — see wrapper above.)
 
     SAFETY: refuses unless the title is *currently* duplicated — i.e. after
     the deletion at least one other copy of the same title still exists.

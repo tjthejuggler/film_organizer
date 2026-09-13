@@ -132,6 +132,7 @@ def worker_loop(interval: float = 3.0):
 
 
 def _execute(entry, payload: dict):
+    from . import lut_sync
     with tx() as c:
         c.execute("UPDATE drive_queue SET status='running' WHERE id=?", (entry["id"],))
     jid = jobs.create(f"queue_{entry['kind']}", total=0)
@@ -162,6 +163,7 @@ def _execute(entry, payload: dict):
     with tx() as c:
         c.execute("UPDATE drive_queue SET status='done', ran_at=?, job_id=? WHERE id=?",
                   (_now(), jid, entry["id"]))
+    lut_sync.request_sync(f"queue_{entry['kind']}")  # drive plugged -> reachability changed
     # a queued backup-move completes its originating notification
     nid: Optional[int] = payload.get("notification_id")
     if nid:

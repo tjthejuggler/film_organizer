@@ -668,6 +668,7 @@ async function openSettings() {
   $("#s_llm_model").value = s.llm_model || "";
   $("#s_internal_root").value = s.internal_root || "";
   $("#s_external_root").value = s.external_root || "";
+  $("#s_move_native_dialog").checked = s.move_native_dialog !== "0";
   const { roots } = await api("/api/roots");
   $("#rootList").innerHTML = roots.map(r => `
     <li>
@@ -694,6 +695,7 @@ async function saveSettings() {
     llm_model: $("#s_llm_model").value.trim(),
     internal_root: $("#s_internal_root").value.trim(),
     external_root: $("#s_external_root").value.trim(),
+    move_native_dialog: $("#s_move_native_dialog").checked ? "1" : "0",
   } } });
 }
 async function testProvider(kind) {

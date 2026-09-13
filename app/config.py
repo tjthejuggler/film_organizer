@@ -37,6 +37,9 @@ DEFAULT_SETTINGS = {
     # storage targets for the Move feature (drawer buttons)
     "internal_root": os.path.expanduser("~/Videos"),
     "external_root": "",
+    # route moves through KIO so the desktop shows its native move dialog
+    # ("1" on / "0" off; falls back silently when no desktop is available)
+    "move_native_dialog": "1",
 }
 
 # settings that must be migrated away from when they still hold these

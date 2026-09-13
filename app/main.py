@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, drivequeue, duplicates, enrich, fileops, jobs, llm, mover, notifications, recommender, scanner, seasons, tmdb, watchnext
+from . import config, db, drivequeue, duplicates, enrich, fileops, jobs, llm, lut_sync, mover, notifications, recommender, scanner, seasons, tmdb, watchnext
 
 db.init()
 
@@ -860,6 +860,7 @@ def delete_title(tid: int):
     _get_title_or_404(tid)
     with db.tx() as c:
         c.execute("DELETE FROM titles WHERE id=?", (tid,))
+    lut_sync.request_sync("delete_title")   # voice fast-path drops dead entries
     # the pin's slot copy still exists on disk but no row pins it anymore —
     # setting a new Watch Next will wipe the slot as usual
     return {"ok": True}
@@ -936,6 +937,7 @@ def delete_title_files(tid: int, keep_record: bool = False, queue: bool = True):
                 "UPDATE titles SET history=1, size_bytes=0, episode_count=0, "
                 "seasons=NULL, last_seen=? WHERE id=?",
                 (now_iso(), tid))
+    lut_sync.request_sync("delete_files")   # voice fast-path drops dead entries
     return {"ok": True, "title": row["title"], "kept_record": keep_record, **result}
 
 
@@ -1036,7 +1038,12 @@ def start_scan(body: JobIn = None):
         raise HTTPException(400, "no enabled roots to scan")
     jid = jobs.create("scan", total=0)
     jobs.log(jid, f"Scan requested for: {', '.join(roots)}")
-    jobs.run_background(jid, lambda j: scanner.scan_roots(j, roots))
+
+    def _scan(job):
+        scanner.scan_roots(job, roots)
+        lut_sync.request_sync("scan")   # voice fast-path follows the catalog
+
+    jobs.run_background(jid, _scan)
     return {"job_id": jid}
 
 
@@ -1085,6 +1092,8 @@ def move_title(tid: int, body: MoveIn):
             f"Move '{row['title']}' to {dest}")
         return {"job_id": None, "queued": True, "queue_id": qid,
                 "queued_now": created, "drive": dest}
+    # (reachable-target moves sync via drivequeue._execute / mover hook;
+    # the queued branch syncs when the drive finally connects)
     jid = jobs.create("move", total=0)
     jobs.log(jid, f"Move requested: title {tid} -> {body.target}")
 
@@ -1092,6 +1101,7 @@ def move_title(tid: int, body: MoveIn):
         error = None
         try:
             mover.move_title(job, tid, body.target)
+            lut_sync.request_sync("move")   # voice fast-path follows the file
         except Exception as e:
             jobs.log(job, f"FAILED: {e}")
             error = str(e)
@@ -1323,6 +1333,9 @@ def _drives_signature() -> str:
 def _safe_queue_drain():
     try:
         drivequeue.run_due()
+        # a drive just plugged in / out: reachability changed -> regenerate
+        # the voice fast-path (parked series return, new movies go live)
+        lut_sync.request_sync("drive_change")
     except Exception:
         pass  # the poller thread will retry
 
