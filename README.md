@@ -37,6 +37,19 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-13** — **episode watch checklist in the series drawer**: series now
+  get a collapsible "Mark episodes watched" section (between the flag row and
+  the file list) listing every parsed episode file as `S1E2` checkboxes with a
+  progress bar + `done/total` counter in the collapsed summary, and *all /
+  none* bulk buttons. Each tick is stored per-file (`files.watched_manual`,
+  migrated on boot, untouched by rescans); ticking the LAST episode auto-marks
+  the whole series watched on the main list — same path as the manual button
+  (backup notification + next-season probe included). Unticking episodes never
+  un-watches the series. API: `POST /api/titles/{tid}/files/{fid}/watched`
+  (one episode) and `POST /api/titles/{tid}/episodes-watched`
+  (`{"watched":bool,"season":int|null}` bulk), both answering
+  `promoted`/`episodes_watched`/`episodes_total` so the drawer updates in place
+  without collapsing.
 - **2026-09-12** — **calendar shows only what's actually NEW + hide-without-delete**:
   the 📅 badge used to show every upcoming season, so an "8" that never went away
   felt like unread news. Now each `season_watch` row carries `changed_at` (stamped

@@ -506,6 +506,28 @@ async function openDrawer(id) {
       <button class="btn mini" id="dDescBtn">Show description</button>
       <p class="overview hidden" id="dDesc">${esc(descText)}</p>
     </div>
+    ${t.kind === "series" && t.episodes_tracked ? `
+    <details class="editbox epbox" id="epBox">
+      <summary>
+        Mark episodes watched
+        <span class="epprog"><span class="epprogbar"><span style="width:${t.episodes_tracked ? Math.round(100 * t.episodes_watched / t.episodes_tracked) : 0}%"></span></span>
+        <span class="epcount">${t.episodes_watched}/${t.episodes_tracked}</span></span>
+      </summary>
+      <div class="epall">
+        <button class="btn mini ghost" id="epAll" title="Tick every episode">all</button>
+        <button class="btn mini ghost" id="epNone" title="Untick every episode">none</button>
+      </div>
+      <div class="eplist">
+        ${t.files.filter(f => f.episode !== null && f.episode !== undefined && !f.missing)
+          .sort((a, b) => ((a.season ?? 1) - (b.season ?? 1)) || (a.episode - b.episode) || a.path.localeCompare(b.path))
+          .map(f => `
+          <label class="epitem ${f.watched_manual ? "seen" : ""}" data-epid="${f.id}">
+            <input type="checkbox" ${f.watched_manual ? "checked" : ""}>
+            <span class="epname">S${f.season ?? 1}E${f.episode}</span>
+            <span class="eppath" title="${esc(f.path)}">${esc(f.path.split("/").pop())}</span>
+          </label>`).join("")}
+      </div>
+    </details>` : ""}
     <div class="moverow">
       <span class="mlab">Move to:</span>
       ${(t.on_both_drives
@@ -599,6 +621,27 @@ async function openDrawer(id) {
       }
     } catch (err) { alert(err.message); }
   };
+  // ---- episode checklist (series) ----
+  $("#drawer").dataset.tid = id;
+  const epAll = $("#epAll");
+  if (epAll) epAll.onclick = async () => {
+    try {
+      const r = await api(`/api/titles/${id}/episodes-watched`,
+        { method: "POST", body: { watched: true, season: null } });
+      $$("#dBody .epitem").forEach(x => { x.classList.add("seen"); $("input", x).checked = true; });
+      updateEpProgress(r);
+      if (r.promoted) markDrawerWatched();
+    } catch (err) { alert(err.message); }
+  };
+  const epNone = $("#epNone");
+  if (epNone) epNone.onclick = async () => {
+    try {
+      const r = await api(`/api/titles/${id}/episodes-watched`,
+        { method: "POST", body: { watched: false, season: null } });
+      $$("#dBody .epitem").forEach(x => { x.classList.remove("seen"); $("input", x).checked = false; });
+      updateEpProgress(r);
+    } catch (err) { alert(err.message); }
+  };
   const doMove = async target => {
     const label = target === "internal" ? "internal" : "external";
     const dupNote = t.on_both_drives
@@ -647,6 +690,19 @@ The move was queued and runs automatically when it is connected (Settings → Dr
   };
   $("#eRevert").onclick = () => openDrawer(id);
 }
+// in-place updates so the checklist never collapses while ticking
+function updateEpProgress(r) {
+  const bar = $("#dBody .epprogbar > span");
+  const count = $("#dBody .epcount");
+  if (bar) bar.style.width = `${r.episodes_total ? Math.round(100 * r.episodes_watched / r.episodes_total) : 0}%`;
+  if (count) count.textContent = `${r.episodes_watched}/${r.episodes_total}`;
+}
+function markDrawerWatched() {
+  const btn = $("#dWatch");
+  if (btn) { btn.textContent = "✓ Watched"; btn.classList.add("primary"); }
+  const t = state.titles.find(x => String(x.id) === $("#drawer").dataset.tid);
+  if (t) { t.watched = true; renderRows(); }
+}
 $("#dBody").addEventListener("click", async e => {
   const p = e.target.closest("[data-person]");
   if (p) {
@@ -660,6 +716,25 @@ $("#dBody").addEventListener("click", async e => {
   const parts = a.dataset.open.split(":");
   try { await api(`/api/titles/${parts[0]}/files/${parts[1]}/open`); }
   catch (err) { alert(err.message); }
+});
+// episode checklist: change (not click) so the label's synthetic event
+// cannot double-fire the API call
+$("#dBody").addEventListener("change", async e => {
+  const input = e.target.closest('.epitem input[type="checkbox"]');
+  if (!input) return;
+  const ep = input.closest(".epitem");
+  const tid = $("#drawer").dataset.tid;
+  const watched = input.checked;
+  try {
+    const r = await api(`/api/titles/${tid}/files/${ep.dataset.epid}/watched`,
+      { method: "POST", body: { watched } });
+    ep.classList.toggle("seen", watched);
+    updateEpProgress(r);
+    if (r.promoted) markDrawerWatched(); // last episode ticked -> series watched
+  } catch (err) {
+    input.checked = !watched; // revert on failure
+    alert(err.message);
+  }
 });
 $("#dClose").onclick = () => $("#drawer").classList.remove("open");
 

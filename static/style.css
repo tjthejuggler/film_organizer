@@ -275,6 +275,29 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 .editbox { margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
 .editbox summary { cursor: pointer; color: var(--dim); font-size: 13px; user-select: none; }
 .editbox summary:hover { color: var(--text); }
+
+/* episode watch checklist (series drawer) */
+.epbox summary { display: flex; align-items: center; gap: 8px; }
+.epbox .epprog { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.epprogbar { width: 90px; height: 6px; border-radius: 999px; background: var(--panel2);
+             border: 1px solid var(--line); overflow: hidden; }
+.epprogbar > span { display: block; height: 100%; background: var(--ok);
+                    border-radius: 999px; transition: width .2s ease; }
+.epbox .epcount { color: var(--dim); font-variant-numeric: tabular-nums; }
+.epbox .epall { display: flex; gap: 6px; margin: 8px 0 2px; }
+.eplist { max-height: 260px; overflow-y: auto; margin-top: 6px; }
+.epitem {
+  display: flex; align-items: center; gap: 8px; padding: 5px 6px;
+  border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13px;
+}
+.epitem:last-child { border-bottom: none; }
+.epitem:hover { background: var(--panel2); }
+.epitem input { accent-color: var(--ok); flex: none; }
+.epitem .epname { font-weight: 700; flex: none; min-width: 52px; }
+.epitem .eppath { color: var(--dim); font-size: 12px; overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+.epitem.seen .epname, .epitem.seen .eppath { opacity: .55; }
+.epitem.seen .epname::after { content: " ✓"; color: var(--ok); }
 .egrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-top: 10px; }
 .egrid label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
 .egrid input, .egrid select, .egrid textarea {

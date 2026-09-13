@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, drivequeue, duplicates, enrich, fileops, jobs, llm, lut_sync, mover, notifications, recommender, scanner, seasons, tmdb, watchnext
+from . import config, db, drivequeue, duplicates, enrich, episodes, fileops, jobs, llm, lut_sync, mover, notifications, recommender, scanner, seasons, tmdb, watchnext
 
 db.init()
 
@@ -133,6 +133,15 @@ class HistorySearchIn(BaseModel):
     title: str
     kind: str = "movie"
     year: Optional[int] = None
+
+
+class EpisodeWatchedIn(BaseModel):
+    watched: bool
+
+
+class SeasonWatchedIn(BaseModel):
+    watched: bool
+    season: Optional[int] = None  # None = every season
 
 
 class ExtWatchedIn(BaseModel):
@@ -376,8 +385,14 @@ def get_title(tid: int):
     row = _get_title_or_404(tid)
     d = _title_payload(row)
     d["files"] = [dict(f) for f in db.q(
-        "SELECT id, path, size_bytes, season, episode, watched_folder, missing FROM files WHERE title_id=? ORDER BY path",
+        "SELECT id, path, size_bytes, season, episode, watched_folder, watched_manual, missing FROM files WHERE title_id=? ORDER BY path",
         (tid,))]
+    # drawer checklist progress: how many parsed episode files are ticked
+    d["episodes_watched"] = sum(
+        1 for f in d["files"] if f["episode"] is not None
+        and not f["missing"] and f["watched_manual"] == 1)
+    d["episodes_tracked"] = sum(
+        1 for f in d["files"] if f["episode"] is not None and not f["missing"])
     d["locations"] = [r["p"] for r in db.q(
         """SELECT DISTINCT r.path p FROM files f
            JOIN roots r ON f.path LIKE r.path || '%'
@@ -519,6 +534,25 @@ def set_watched(tid: int, body: WatchedIn):
         except Exception:
             pass  # the season calendar is never allowed to break watching
     return {"ok": True, "watched": body.watched}
+
+
+@app.post("/api/titles/{tid}/files/{fid}/watched")
+def set_file_watched(tid: int, fid: int, body: EpisodeWatchedIn):
+    """Tick one episode in the drawer checklist. When this tick completes
+    the set, the whole series is auto-marked watched (promoted=true)."""
+    _get_title_or_404(tid)
+    try:
+        return episodes.set_episode_watched(tid, fid, body.watched)
+    except episodes.EpisodeNotFound:
+        raise HTTPException(404, "episode file not found")
+
+
+@app.post("/api/titles/{tid}/episodes-watched")
+def set_episodes_watched(tid: int, body: SeasonWatchedIn):
+    """Bulk tick/untick one season (season=null: all seasons) of the
+    drawer checklist; auto-promotes the series on the completing tick."""
+    _get_title_or_404(tid)
+    return episodes.set_season_watched(tid, body.season, body.watched)
 
 
 @app.post("/api/titles/{tid}/favorite")

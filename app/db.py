@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS files(
     season         INTEGER,
     episode        INTEGER,
     watched_folder INTEGER DEFAULT 0,
+    watched_manual INTEGER,  -- user-ticked episode watch flag (NULL = never touched)
     missing        INTEGER DEFAULT 0,
     last_seen      TEXT,
     created        REAL
@@ -252,6 +253,9 @@ def ensure():
         fcols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
         if "created" not in fcols:
             con.execute("ALTER TABLE files ADD COLUMN created REAL")
+        # per-episode user watch flag (drawer checklist); NULL = never touched
+        if "watched_manual" not in fcols:
+            con.execute("ALTER TABLE files ADD COLUMN watched_manual INTEGER")
         # drive_queue built before the FK removal would cascade-erase queue
         # history whenever a queued delete removed its title row: rebuild
         if con.execute("PRAGMA foreign_key_list(drive_queue)").fetchone():
