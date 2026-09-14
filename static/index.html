@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Film Organizer</title>
 <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css?v=13">
+<link rel="stylesheet" href="/style.css?v=14">
 </head>
 <body>
 <header>
@@ -192,6 +192,23 @@
   </div>
 </div>
 
+<!-- season-move picker modal (series) -->
+<div id="mvModal" class="modal hidden">
+  <div class="sheet delsheet">
+    <div class="shead"><h2>Move seasons of <span id="mvName"></span></h2><button class="btn ghost" id="mvClose">✕</button></div>
+    <p class="hint">Pick which seasons to move — unticked seasons stay exactly where they are. Only the checked ones travel to the chosen drive.</p>
+    <div class="mvall">
+      <button class="btn mini ghost" id="mvAll" title="Tick every season">all</button>
+      <button class="btn mini ghost" id="mvNone" title="Untick every season">none</button>
+    </div>
+    <div id="mvList" class="mvlist"></div>
+    <div class="sfoot mvactions">
+      <button class="btn mini" id="mvInt">💻 Move checked → Internal</button>
+      <button class="btn mini" id="mvExt">🔌 Move checked → External</button>
+    </div>
+  </div>
+</div>
+
 <!-- seen-history modal -->
 <div id="histModal" class="modal hidden">
   <div class="sheet">
@@ -260,6 +277,6 @@
   <pre id="tLog"></pre>
 </div>
 
-<script src="/app.js?v=15"></script>
+<script src="/app.js?v=16"></script>
 </body>
 </html>

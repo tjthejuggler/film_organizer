@@ -536,6 +536,9 @@ async function openDrawer(id) {
         : t.storage_side === "external"
           ? `<button class="btn mini" id="dMoveInt" title="Move files back to the internal folder configured in Settings">💻 Internal</button>`
           : `<button class="btn mini" id="dMoveExt" title="Move files to the external drive (lands in its Movies/ or Series/ folder per the title's kind)">🔌 External</button>`)}
+      ${t.kind === "series" && t.files.some(f => !f.missing) ? `
+      <button class="btn mini seasonsbtn" id="dSeasons"
+        title="Choose seasons — move only the seasons you pick instead of the whole series">✏️</button>` : ""}
     </div>
     <dl>
       ${t.rating_imdb ? `<dt>IMDb</dt><dd>★ ${t.rating_imdb} (${(t.votes_imdb || 0).toLocaleString()} votes)</dd>` : ""}
@@ -662,6 +665,45 @@ The move was queued and runs automatically when it is connected (Settings → Dr
   const dMoveExt = $("#dMoveExt");
   if (dMoveExt) dMoveExt.onclick = () => doMove("external");
 
+  // ---- season picker (series: move only the checked seasons) ----
+  const dSeasons = $("#dSeasons");
+  if (dSeasons) {
+    // same convention as the backend: a file without a parsed season is S1
+    const seasons = [...new Set(t.files.filter(f => !f.missing)
+      .map(f => f.season ?? 1))].sort((a, b) => a - b);
+    const epCount = s => t.files.filter(f => !f.missing && (f.season ?? 1) === s).length;
+    $("#mvName").textContent = t.title;
+    $("#mvList").innerHTML = seasons.map(s => `
+      <label class="mvitem">
+        <input type="checkbox" data-season="${s}" checked>
+        <span class="mvname">Season ${s}</span>
+        <span class="mvcount">${epCount(s)} file(s)</span>
+      </label>`).join("");
+    $("#mvAll").onclick = () => $$("#mvList input").forEach(i => i.checked = true);
+    $("#mvNone").onclick = () => $$("#mvList input").forEach(i => i.checked = false);
+    const moveChecked = async target => {
+      const sel = $$("#mvList input:checked").map(i => Number(i.dataset.season));
+      if (!sel.length) { alert("Tick at least one season to move."); return; }
+      const label = target === "internal" ? "internal" : "external";
+      const n = sel.reduce((acc, s) => acc + epCount(s), 0);
+      if (!confirm(`Move season(s) ${sel.join(", ")} of "${t.title}" (${n} file(s)) to the ${label} folder? Unticked seasons stay where they are.`)) return;
+      try {
+        const r = await api(`/api/titles/${id}/move`,
+          { method: "POST", body: { target, purge_others: true, seasons: sel } });
+        $("#mvModal").classList.add("hidden");
+        if (r.queued) {
+          alert(`The ${label} drive (${r.drive}) is not connected right now.
+The move was queued and runs automatically when it is connected (Settings → Drive queues).`);
+        } else {
+          watchJob(r.job_id, `Move S${sel.join(",S")} → ${label}`);
+        }
+      } catch (err) { alert(err.message); }
+    };
+    $("#mvInt").onclick = () => moveChecked("internal");
+    $("#mvExt").onclick = () => moveChecked("external");
+    dSeasons.onclick = () => $("#mvModal").classList.remove("hidden");
+  }
+
   // ---- edit details ----
   $("#eSave").onclick = async () => {
     const val = k => { const el = $("#e_" + k); return el ? el.value.trim() : null; };
@@ -737,6 +779,10 @@ $("#dBody").addEventListener("change", async e => {
   }
 });
 $("#dClose").onclick = () => $("#drawer").classList.remove("open");
+$("#mvClose").onclick = () => $("#mvModal").classList.add("hidden");
+$("#mvModal").addEventListener("click", e => {
+  if (e.target === $("#mvModal")) $("#mvModal").classList.add("hidden");
+});
 
 /* ---------- settings ---------- */
 async function openSettings() {

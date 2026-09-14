@@ -13,6 +13,7 @@ taking matching same-stem sidecar files (.srt, .nfo, …) along.
 import os
 import shutil
 from datetime import datetime, timezone
+from typing import List, Optional
 
 from . import config, db, fileops, kio, parser
 from .db import q, q1, tx
@@ -41,7 +42,8 @@ def src_base(path: str):
 
 
 def move_title(job_id: str, title_id: int, target: str,
-               purge_others: bool = False):
+               purge_others: bool = False,
+               seasons: Optional[List[int]] = None):
     """Move a title to the 'internal' or 'external' side.
 
     purge_others=True upgrades the move to a CONSOLIDATION (the drawer's
@@ -49,6 +51,10 @@ def move_title(job_id: str, title_id: int, target: str,
     still sit on the other side are deleted, so it ends up in exactly one
     place. Backup-style callers (notifications, queued moves without the
     flag) keep the copy-preserving semantics.
+
+    seasons (series): move only these seasons; None moves everything.
+    A partial-season move is always FILE-BY-FILE — a release folder that
+    also holds seasons left behind is never relocated whole.
     """
     from .jobs import log, update
 
@@ -86,9 +92,20 @@ def move_title(job_id: str, title_id: int, target: str,
                     return os.path.relpath(src, hop)
         return os.path.relpath(src, base)
 
-    files = q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,))
-    if not files:
+    all_files = q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,))
+    if not all_files:
         raise ValueError("No accessible files to move for this title")
+    files = all_files
+    if seasons:
+        # partial move: keep only episodes of the chosen seasons (a file
+        # without a parsed season counts as season 1, like the drawer UI)
+        want = set(seasons)
+        files = [f for f in files
+                 if (f["season"] if f["season"] is not None else 1) in want]
+        if not files:
+            raise ValueError("No files match the selected seasons")
+        log(job_id, f"Season filter: moving only "
+                    f"{', '.join('S' + str(s) for s in sorted(want))}")
 
     # native system move dialog: a helper process owns a Plasma JobView
     # (the same progress dialog Dolphin's moves use) and does the transfer
@@ -111,12 +128,16 @@ def move_title(job_id: str, title_id: int, target: str,
                 f"system move failed or was cancelled: {detail or 'no detail'}")
 
     # --- plan: dedicated release folders as units, leftovers file-by-file ----
+    # a PARTIAL move (selected seasons only) always goes file-by-file — a
+    # release folder that also holds seasons left behind must never travel
+    # whole (same-stem sidecar files of each moved episode still ride along)
     folders: dict = {}  # (folder, base) -> [file rows]
     loose = []          # rows without a dedicated folder (or on dead roots)
     for f in files:
         src = os.path.abspath(f["path"])
         base = src_base(src)
-        folder = fileops.dedicated_folder(src, base, title_id)
+        folder = fileops.dedicated_folder(src, base, title_id) \
+            if seasons is None else None
         if folder and os.path.isdir(folder):
             folders.setdefault((folder, base), []).append(f)
         else:
@@ -276,21 +297,24 @@ def move_title(job_id: str, title_id: int, target: str,
     # consolidation: files whose destination already existed were SKIPPED by
     # the move loop (never deleted) — a duplicated title would otherwise end
     # up with two copies on the target and the old one on the source drive
-    purged = _purge_leftovers(job_id, title_id, target) if purge_others else 0
+    purged = _purge_leftovers(job_id, title_id, target,
+                              seasons=seasons) if purge_others else 0
 
     tail = f", {purged} leftover(s) removed" if purged else ""
     log(job_id, f"Move complete: {moved} moved, {skipped} skipped{tail}")
     update(job_id, message=f"Moved {moved} file(s), {skipped} skipped{tail}")
 
 
-def _purge_leftovers(job_id: str, title_id: int, target: str) -> int:
+def _purge_leftovers(job_id: str, title_id: int, target: str,
+                     seasons: Optional[List[int]] = None) -> int:
     """Delete copies of the title that STILL sit outside the target side.
 
     Only physically present files on known, connected roots are touched —
     a copy on an unplugged drive is left for the next visit. Deletion is
     folder-aware (duplicates._delete_title_files) so Subs/, artwork and
     .nfo sidecars of each doomed release folder go with it; the stored
-    title size is recomputed afterwards.
+    title size is recomputed afterwards. With `seasons`, only copies of
+    the selected seasons are purged.
     """
     from . import duplicates
     from .jobs import log
@@ -305,6 +329,9 @@ def _purge_leftovers(job_id: str, title_id: int, target: str) -> int:
 
     doomed = []
     for f in q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,)):
+        if seasons is not None and \
+                (f["season"] if f["season"] is not None else 1) not in set(seasons):
+            continue  # partial move: other seasons' copies are not ours to purge
         if _side(f["path"]) == target:
             continue  # this copy already lives where the user asked
         base = src_base(f["path"])

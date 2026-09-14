@@ -269,6 +269,22 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 .descwrap { margin: 10px 0; }
 .moverow { display: flex; align-items: center; gap: 8px; margin: 10px 0 14px; }
 .moverow .mlab { color: var(--dim); font-size: 12.5px; }
+.moverow .seasonsbtn { margin-left: auto; font-size: 13px; line-height: 1; }
+
+/* season-move picker (series drawer -> ✏️ button) */
+.mvall { display: flex; gap: 6px; margin-bottom: 6px; }
+.mvlist { max-height: 260px; overflow-y: auto; }
+.mvitem {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.mvitem:last-child { border-bottom: none; }
+.mvitem:hover { background: var(--panel2); }
+.mvitem input { accent-color: var(--ok); flex: none; }
+.mvitem .mvname { font-weight: 700; }
+.mvitem .mvcount { margin-left: auto; color: var(--dim); font-size: 12px; }
+.mvactions { gap: 8px; }
+.mvactions .btn { flex: 1; }
 .flagrow { display: flex; gap: 8px; margin: 8px 0 10px; flex-wrap: wrap; }
 
 /* edit-details form */

@@ -55,7 +55,7 @@ async def no_stale_static(request, call_next):
     return resp
 
 
-from typing import Optional
+from typing import List, Optional
 
 # ---- models ---------------------------------------------------------------
 class RootIn(BaseModel):
@@ -159,6 +159,7 @@ class ExtWatchedIn(BaseModel):
 class MoveIn(BaseModel):
     target: str  # "internal" | "external"
     purge_others: bool = False  # consolidation: also delete copies on the other side
+    seasons: Optional[List[int]] = None  # series: move only these seasons (None = all)
 
 
 class RecDecideIn(BaseModel):
@@ -1126,6 +1127,8 @@ def move_title(tid: int, body: MoveIn):
     if body.target not in ("internal", "external"):
         raise HTTPException(400, "target must be 'internal' or 'external'")
     row = _get_title_or_404(tid)  # 404 early; mover raises ValueError for config issues
+    seasons = sorted(set(body.seasons)) if body.seasons else None
+    sel = f" (seasons {', '.join(map(str, seasons))} only)" if seasons else ""
     # target drive not connected right now? queue it — runs automatically
     # the moment the drive is plugged in (Settings shows what is waiting)
     dest = db.settings_get(f"{body.target}_root")
@@ -1133,20 +1136,22 @@ def move_title(tid: int, body: MoveIn):
         dest = os.path.abspath(dest)
         qid, created = drivequeue.enqueue(
             "move", tid, dest,
-            {"target": body.target, "purge_others": body.purge_others},
-            f"Move '{row['title']}' to {dest}")
+            {"target": body.target, "purge_others": body.purge_others,
+             "seasons": seasons},
+            f"Move '{row['title']}' to {dest}{sel}")
         return {"job_id": None, "queued": True, "queue_id": qid,
                 "queued_now": created, "drive": dest}
     # (reachable-target moves sync via drivequeue._execute / mover hook;
     # the queued branch syncs when the drive finally connects)
+    sel = f" (seasons {', '.join(map(str, seasons))} only)" if seasons else ""
     jid = jobs.create("move", total=0)
-    jobs.log(jid, f"Move requested: title {tid} -> {body.target}")
+    jobs.log(jid, f"Move requested: title {tid} -> {body.target}{sel}")
 
     def _run(job):
         error = None
         try:
             mover.move_title(job, tid, body.target,
-                             purge_others=body.purge_others)
+                             purge_others=body.purge_others, seasons=seasons)
             lut_sync.request_sync("move")   # voice fast-path follows the file
         except Exception as e:
             jobs.log(job, f"FAILED: {e}")

@@ -144,7 +144,8 @@ def _execute(entry, payload: dict):
             from . import mover
             mover.move_title(jid, entry["title_id"],
                              payload.get("target", "external"),
-                             purge_others=bool(payload.get("purge_others")))
+                             purge_others=bool(payload.get("purge_others")),
+                             seasons=payload.get("seasons") or None)
         elif entry["kind"] == "delete":
             _run_delete(entry, payload, jid)
         elif entry["kind"] == "delete_copy":

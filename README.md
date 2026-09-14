@@ -269,6 +269,16 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-14 (16)** — **move only chosen seasons of a series**: the series
+  drawer's *Move to:* row gains a ✏️ button that opens a season picker —
+  tick the seasons to move, press 💻/🔌, and only those travel; unticked
+  seasons stay exactly where they are. Partial moves go file-by-file (a
+  release folder holding seasons left behind is never relocated whole),
+  consolidation purges respect the selection, and the selection survives
+  queueing for offline drives. Implementation:
+  [`MoveIn.seasons`](app/main.py) → [`mover.move_title(seasons=…)`](app/mover.py)
+  → [drivequeue payload](app/drivequeue.py); picker modal in
+  [index.html](static/index.html) wired in [app.js](static/app.js).
 - **2026-09-13 (15)** — **duplicate titles consolidate on move**: a title
   that lives on BOTH drives now shows **both** move buttons in its drawer
   (💻 Internal and 🔌 External), and whichever you pick leaves the title in
