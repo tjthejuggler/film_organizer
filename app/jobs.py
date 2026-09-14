@@ -50,6 +50,24 @@ def finish(jid: str, error: str = None):
         )
 
 
+def request_cancel(jid: str) -> bool:
+    """Cooperative cancel: flag the job row; long-running loops poll
+    is_cancelled() and stop between work items. Returns False when the
+    job was not running anymore (already finished or unknown)."""
+    with db.tx() as c:
+        cur = c.execute(
+            "UPDATE jobs SET status='cancelled', finished_at=datetime('now') "
+            "WHERE id=? AND status='running'",
+            (jid,),
+        )
+        return cur.rowcount > 0
+
+
+def is_cancelled(jid: str) -> bool:
+    row = db.q1("SELECT status FROM jobs WHERE id=?", (jid,))
+    return bool(row) and row["status"] == "cancelled"
+
+
 def run_background(jid: str, fn):
     def _wrap():
         try:

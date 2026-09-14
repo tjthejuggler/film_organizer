@@ -862,7 +862,9 @@ $("#rootList").addEventListener("click", async e => {
 
 /* ---------- jobs / toast ---------- */
 let jobTimer = null;
+let currentJobId = null;
 function watchJob(jid, label, onDone) {
+  currentJobId = jid;
   $("#tTitle").textContent = label;
   $("#toast").classList.remove("hidden");
   clearInterval(jobTimer);
@@ -902,7 +904,17 @@ $("#btnEnrich").onclick = async () => {
     });
   } catch (err) { alert(err.message); }
 };
-$("#tClose").onclick = () => { clearInterval(jobTimer); $("#toast").classList.add("hidden"); };
+$("#tClose").onclick = async () => {
+  clearInterval(jobTimer);
+  $("#toast").classList.add("hidden");
+  // X actually CANCELS a running job (cooperative stop between work
+  // items) — hiding the toast alone left jobs burning API calls forever
+  if (currentJobId) {
+    try { await api(`/api/jobs/${currentJobId}/cancel`, { method: "POST" }); } catch (e) {}
+    currentJobId = null;
+    load();
+  }
+};
 
 /* ---------- folder picker ---------- */
 let fpTargetInput = null;

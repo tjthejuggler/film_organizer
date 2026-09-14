@@ -286,6 +286,16 @@ def ensure():
 def init():
     """Full first-boot initialization: schema + default roots/settings."""
     ensure()
+    # jobs still marked 'running' belong to a previous process that died:
+    # no thread carries them anymore, so close them out — otherwise the UI
+    # would poll them forever and their rows would block honest status
+    with tx() as c:
+        c.execute(
+            "UPDATE jobs SET status='cancelled', "
+            "error='interrupted: app was stopped or restarted', "
+            "finished_at=COALESCE(finished_at, datetime('now')) "
+            "WHERE status='running'"
+        )
     if not q1("SELECT 1 FROM roots LIMIT 1"):
         for p in config.DEFAULT_ROOTS:
             with tx() as c:

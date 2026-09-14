@@ -1121,6 +1121,20 @@ def get_job(jid: str):
     return d
 
 
+@app.post("/api/jobs/{jid}/cancel")
+def cancel_job(jid: str):
+    """Cooperative cancel: the job's worker loop checks the flag between
+    work items and stops; nothing is killed mid-write."""
+    ok = jobs.request_cancel(jid)
+    if not ok:
+        row = db.q1("SELECT status FROM jobs WHERE id=?", (jid,))
+        if not row:
+            raise HTTPException(404, "job not found")
+        if row["status"] != "running":
+            return {"ok": True, "status": row["status"]}  # nothing to cancel
+    return {"ok": True, "status": "cancelled"}
+
+
 # ---- move between internal / external storage -----------------------------
 @app.post("/api/titles/{tid}/move")
 def move_title(tid: int, body: MoveIn):

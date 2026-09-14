@@ -25,6 +25,14 @@ MINISERIES_MARKERS = {"miniseries", "aminiseries", "aaminiseries",
 SAMPLE_RE = re.compile(r"(^|[^a-z])sample([^a-z]|$)", re.I)
 SEASON_DIR_RE = re.compile(r"^(?:s|season|series|saison)\s*\.?\s*(\d{1,2})$|^specials?$|^extras?$", re.I)
 MASTERCLASS_RE = re.compile(r"masterclass|master\s?class|course|tutorial|udemy|lessons?", re.I)
+# camera/phone default clip names: "20210710 142223", "20250113_150345",
+# "IMG_20210924_210805", "VID_20210924_210805", "DSC_0123", "PXL_20250113_150345".
+# These are raw recordings, never catalogued movie/show titles. (Only
+# unambiguous maker prefixes are listed — no 'MOV', which could collide
+# with real titles.)
+CAMERA_CLIP_RE = re.compile(
+    r"(?:(?:IMG|VID|DSC|DJI|MVIMG|PXL)[\s_.\-][\d\s.\-_]*"
+    r"|\d{8}[\s_.\-]?\d{6}(?:[\s_.\-]\d+)?)$", re.I)
 
 VLC_RE = re.compile(r"^vlc[\-._ ]?record[\-._ ]?\d{4}[\-._ ]?\d{2}[\-._ ]?\d{2}[\-._ ]?\d{2}h\d{2}m\d{2}s[\-._ ]*", re.I)
 SITE_RE = re.compile(
@@ -234,6 +242,12 @@ def parse_name(raw: str) -> dict:
 
 def norm_component(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def is_camera_name(stem: str) -> bool:
+    """True when a file stem is a camera/phone default clip name
+    (timestamp stamp or IMG_/VID_/DSC_ style)."""
+    return bool(CAMERA_CLIP_RE.match((stem or "").strip()))
 
 
 def watched_marker(path: str):

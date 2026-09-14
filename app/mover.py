@@ -288,11 +288,15 @@ def move_title(job_id: str, title_id: int, target: str,
                 "watched_at=COALESCE(watched_at, ?) WHERE id=?",
                 (_now(), title_id))
 
-    # the destination drive becomes a managed root so scans cover it and
-    # locations stay accurate (idempotent)
-    if moved:
+    # the LANDING FOLDER becomes a managed root so scans cover moved files
+    # and locations stay accurate (idempotent). NEVER register the whole
+    # drive: backup drives also hold camera clips / photos / misc backups,
+    # and sweeping the entire device floods the catalog with junk titles
+    # (and LLM-cleanup calls for every one). The kind subfolder (Movies/ or
+    # Series/) matches the per-folder roots the UI already uses.
+    if moved and dest_base.rstrip(os.sep) != drive_root.rstrip(os.sep):
         with tx() as c:
-            c.execute("INSERT OR IGNORE INTO roots(path) VALUES(?)", (drive_root,))
+            c.execute("INSERT OR IGNORE INTO roots(path) VALUES(?)", (dest_base,))
 
     # consolidation: files whose destination already existed were SKIPPED by
     # the move loop (never deleted) — a duplicated title would otherwise end

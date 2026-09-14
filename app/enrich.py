@@ -67,6 +67,24 @@ def _search_variants(title: str, year, kind: str) -> list:
     return cands
 
 
+def _llm_futile(title: str) -> bool:
+    """Heuristic: default camera/phone recording names (timestamp stamps,
+    IMG_/VID_ codes) — or names that are mostly digits — are personal
+    recordings, not catalogued releases. The LLM can never turn them into
+    a real title, so an API call on them is pure waste."""
+    t = (title or "").strip()
+    if not t:
+        return True
+    if parser.is_camera_name(t):
+        return True
+    key = parser.normalize_key(t)
+    if len(key) >= 8:
+        digits = sum(ch.isdigit() for ch in key)
+        if digits / len(key) >= 0.5:
+            return True
+    return False
+
+
 def enrich_one(row, job_log=None, force=False):
     """Enrich a single titles row. Returns status string."""
     tid = row["id"]
@@ -96,9 +114,11 @@ def enrich_one(row, job_log=None, force=False):
         # again: the title is almost certainly not a catalogued movie/show
         # (courses, YouTube rips, personal recordings...).
         llm_used = False
-        # never LLM-rewrite an identity the user locked via the edit form
-        if best is None and llm.enabled() and title and not (row["llm_attempts"] or 0) \
-                and not row["title_locked"]:
+        futile = _llm_futile(title)
+        # never LLM-rewrite an identity the user locked via the edit form,
+        # or burn a call on a hopeless camera-recording name
+        if best is None and llm.enabled() and title and not futile \
+                and not (row["llm_attempts"] or 0) and not row["title_locked"]:
             if job_log:
                 job_log(f"LLM cleanup for: {title!r}")
             llm_used = True
@@ -150,9 +170,13 @@ def enrich_one(row, job_log=None, force=False):
         return "error"
 
     if best is None:
-        status = "not_found" if (llm_used or (row["llm_attempts"] or 0)) else "unmatched"
-        err = ("not found in TMDB even after LLM name cleanup — likely not a "
-               "catalogued movie/show" if status == "not_found" else "no confident match")
+        # 'not_found' is terminal for the default enrich run: futile names
+        # (camera recordings) get the same treatment — tried once, done
+        status = "not_found" if (llm_used or (row["llm_attempts"] or 0) or futile) \
+            else "unmatched"
+        err = ("default recording name (camera clip) — not enriched" if futile and not llm_used
+               else "not found in TMDB even after LLM name cleanup — likely not a "
+                    "catalogued movie/show" if status == "not_found" else "no confident match")
         with tx() as c:
             c.execute(
                 "UPDATE titles SET match_status=?, match_error=?, "
@@ -196,7 +220,7 @@ def enrich_one(row, job_log=None, force=False):
 
 
 def run_enrich(job_id: str, title_ids=None, force=False, only_unmatched=True):
-    from .jobs import log, update
+    from .jobs import is_cancelled, log, update
 
     if title_ids:
         ph = ",".join("?" * len(title_ids))
@@ -214,6 +238,10 @@ def run_enrich(job_id: str, title_ids=None, force=False, only_unmatched=True):
 
     counts = {}
     for i, row in enumerate(rows, 1):
+        if is_cancelled(job_id):
+            log(job_id, f"Enrichment cancelled after {i - 1}/{total}")
+            update(job_id, message=f"Cancelled at {i - 1}/{total}")
+            return counts
         st = enrich_one(row, job_log=lambda m: log(job_id, m), force=force)
         counts[st] = counts.get(st, 0) + 1
         update(job_id, progress=i, message=f"Enriched {i}/{total}")

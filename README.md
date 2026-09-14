@@ -37,6 +37,17 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-14** — **runaway enrichment root cause + guardrails**: a Move to the
+  backup drive auto-registered the ENTIRE drive root (`X10 Pro`) as a library
+  root ([`mover.py`](app/mover.py)); the next scan then ingested ~1,400 camera
+  clips (Akaso/neon backups) as "titles" and Enrich burned an LLM call on each.
+  Fixes: the mover now registers only the landing folder (Movies//Series/),
+  camera/phone default clip names (`20250113_150345`, `IMG_…`, `VID_…`, `DSC_…`,
+  `PXL_…`) are skipped at scan time and never LLM-cleaned at enrich time, the
+  toast **X now actually cancels** the running job (cooperative flag checked in
+  the scan/enrich loops), and jobs left 'running' by a crashed/restarted app are
+  closed at boot. Database healed: 616 junk titles + 1,384 file rows removed,
+  bad root deleted (pre-existing personal folders on the drive were kept).
 - **2026-09-13** — **episode watch checklist in the series drawer**: series now
   get a collapsible "Mark episodes watched" section (between the flag row and
   the file list) listing every parsed episode file as `S1E2` checkboxes with a

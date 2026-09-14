@@ -93,6 +93,11 @@ def _iter_videos(root: str):
                 continue
             if parser.SAMPLE_RE.search(fn):
                 continue
+            # camera/phone default clip names ("20250113_150345", "IMG_1234")
+            # are personal recordings, never catalogue titles — skipping them
+            # here keeps backup-drive mishmash out of the library entirely
+            if parser.is_camera_name(os.path.splitext(fn)[0]):
+                continue
             yield os.path.join(dirpath, fn)
 
 
@@ -102,7 +107,7 @@ def _count_videos(root: str) -> int:
 
 def scan_roots(job_id: str, roots: list):
     """Scan the given root paths (full pass) and sync the database."""
-    from .jobs import log, update
+    from .jobs import is_cancelled, log, update
 
     scan_started = _now()
     groups = {}  # dedupe_key -> group dict
@@ -135,6 +140,10 @@ def scan_roots(job_id: str, roots: list):
     done = 0
     for root in planned:
         for path in _iter_videos(root):
+            if is_cancelled(job_id):
+                log(job_id, f"Scan cancelled after {done}/{total} file(s)")
+                update(job_id, message=f"Scan cancelled after {done}/{total}")
+                return len(groups), done
             done += 1
             if done % 25 == 0 or done == total:
                 update(job_id, progress=done, message=f"Scanned {done}/{total}")
