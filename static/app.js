@@ -97,7 +97,22 @@ async function load() {
   $("#statline").textContent =
     `Through filter: ${st.n} titles · ${st.movies} movies · ${st.series} series · ` +
     `${st.watched} watched · ${st.unwatched} unwatched · ${fmtSize(st.bytes)}`;
+  $("#mToggleSub").textContent = `${st.n} titles`; // mobile collapse button
 }
+
+/* ---------- mobile collapsible header (stats + search + filters) ---------- */
+const MTOGGLE_KEY = "film_organizer_mhdr_open";
+function setMobileHeader(open) {
+  document.body.classList.toggle("mExpanded", open);
+  $("#mToggle").setAttribute("aria-expanded", open ? "true" : "false");
+  try { localStorage.setItem(MTOGGLE_KEY, open ? "1" : "0"); }
+  catch (e) { /* private mode — best effort */ }
+}
+$("#mToggle").onclick = () =>
+  setMobileHeader(!document.body.classList.contains("mExpanded"));
+try { // start collapsed on each visit; the button is only visible on mobile
+  if (localStorage.getItem(MTOGGLE_KEY) === "1") setMobileHeader(true);
+} catch (e) { /* ignore */ }
 
 function renderGenres(genres) {
   const sel = $("#genreSel");
@@ -806,11 +821,58 @@ async function openSettings() {
     </li>`).join("");
   $("#modal").classList.remove("hidden");
   refreshDriveQueue(); // per-drive pending operations (moves/deletes)
+  refreshPairing();    // QR + paired device list (Devices section)
 }
+
+/* ---------- Devices (QR pairing) ---------- */
+let pairTimer = null;
+async function refreshPairing() {
+  try {
+    const info = await api("/api/pairing/info");
+    $("#pairQr").src = "/api/pairing/qr.svg";
+    $("#pairCode").textContent = info.code;
+    $("#pairLan").textContent = info.lan_url ? `address: ${info.lan_url}` : "";
+    updatePairExpiry(info.expires_in);
+    clearInterval(pairTimer);
+    pairTimer = setInterval(() => updatePairExpiry(-1), 1000);
+    $("#deviceList").innerHTML = info.devices.map(d => `
+      <li>
+        <span class="path">📱 ${esc(d.name)}</span>
+        <span class="st">paired ${fmtDate(d.created_at)}${d.last_seen ? " · last seen " + fmtDate(d.last_seen) : ""}</span>
+        <button class="btn mini ghost" data-revoke-device="${d.id}" title="Remove this device's access">Revoke</button>
+      </li>`).join("") || '<li><span class="st">No other devices paired.</span></li>';
+  } catch (e) { /* section is cosmetic; never block settings */ }
+}
+function updatePairExpiry(secsLeft) {
+  const el = $("#pairExpiry");
+  if (secsLeft === -1) {           // tick: recompute from displayed deadline
+    secsLeft = Math.max(0, (updatePairExpiry.deadline || 0) - Date.now() / 1000);
+    if (secsLeft === 0) { refreshPairing(); return; }
+  } else {
+    updatePairExpiry.deadline = Date.now() / 1000 + secsLeft;
+  }
+  const m = Math.floor(secsLeft / 60), s = Math.floor(secsLeft % 60);
+  el.textContent = `code expires in ${m}:${String(s).padStart(2, "0")}`;
+}
+$("#btnPairRegen").onclick = async () => {
+  await api("/api/pairing/regenerate", { method: "POST" });
+  refreshPairing();
+};
+$("#btnPairRefresh").onclick = refreshPairing;
+$("#deviceList").addEventListener("click", async e => {
+  const id = e.target.dataset && e.target.dataset.revokeDevice;
+  if (!id) return;
+  await api(`/api/pairing/devices/${id}`, { method: "DELETE" });
+  refreshPairing();
+});
 $("#btnSettings").onclick = openSettings;
-$("#mClose").onclick = () => $("#modal").classList.add("hidden");
+function closeModal() {
+  $("#modal").classList.add("hidden");
+  clearInterval(pairTimer); // stop the pairing-code countdown
+}
+$("#mClose").onclick = closeModal;
 $("#modal").addEventListener("click", e => {
-  if (e.target === $("#modal")) $("#modal").classList.add("hidden");
+  if (e.target === $("#modal")) closeModal();
 });
 async function saveSettings() {
   await api("/api/settings", { method: "POST", body: { values: {

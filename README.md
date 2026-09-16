@@ -37,6 +37,25 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-16** — **mobile collapsible header**: on viewports ≤720px the
+  stats line, search/action buttons and the whole filter bar now collapse
+  into a single `☰ N titles ▾` row ([`.mToggle`](static/style.css:67)) —
+  the movie list starts right at the top of the screen. Tapping it expands
+  everything; the choice is remembered in localStorage. Desktop (wider than
+  720px) is completely unchanged — the toggle is desktop-hidden via
+  [`static/index.html`](static/index.html).
+- **2026-09-15** — **QR device pairing (LAN access)**: the server now binds
+  `0.0.0.0` ([`run.sh`](run.sh), [`launch_film_organizer.sh`](launch_film_organizer.sh),
+  [`config.HOST`](app/config.py)) so phones/tablets can open the app, but a
+  device gate ([`app/pairing.py`](app/pairing.py)) rejects every non-loopback
+  request unless it carries a `fo_device` cookie granted by redeeming a
+  6-digit pairing code. The code is shown only in **⚙ Settings → Devices on
+  this network** as a QR code ([`app/qrsvg.py`](app/qrsvg.py) wraps the
+  `qrcode` package; new dep in [`requirements.txt`](requirements.txt)) encoding
+  `http://<lan-ip>:8765/pair?code=NNNNNN`. Codes are one-shot and expire after
+  5 minutes; loopback is always trusted; devices can be revoked at any time
+  (token hashes only are stored — SHA-256). Verified end-to-end: unpaired
+  remote 403 → scan → paired 200 → replay 400 → revoke → 403 again.
 - **2026-09-14** — **runaway enrichment root cause + guardrails**: a Move to the
   backup drive auto-registered the ENTIRE drive root (`X10 Pro`) as a library
   root ([`mover.py`](app/mover.py)); the next scan then ingested ~1,400 camera

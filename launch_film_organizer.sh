@@ -18,7 +18,9 @@ if curl -fsS "$URL/" >/dev/null 2>&1; then
     exit 0
 fi
 
-nohup ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765 \
+# 0.0.0.0 = LAN-reachable; remote devices must pair via the QR code shown
+# in Settings (device gate in app/pairing.py). Loopback stays trusted.
+nohup ./.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8765 \
     >/dev/null 2>&1 &
 
 # Wait (up to ~10s) for the server to answer before opening the UI.

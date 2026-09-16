@@ -6,7 +6,11 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "film_organizer.db")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-HOST = "127.0.0.1"
+# 0.0.0.0 = listen on all interfaces so paired LAN devices can connect;
+# unpaired remote requests are rejected by the device gate (app/pairing.py).
+# Loopback stays trusted automatically.  pairing.lan_urls() detects the
+# real LAN address for the QR code when HOST is the wildcard.
+HOST = "0.0.0.0"
 PORT = 8765
 
 # Initial library roots (first boot seeds these when the table is empty).
