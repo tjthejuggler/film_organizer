@@ -3,6 +3,10 @@ import httpx
 
 from . import db
 
+# shared keep-alive client: same handshake-saving rationale as tmdb._client
+_client = httpx.Client(base_url="https://www.omdbapi.com/", timeout=20,
+                       limits=httpx.Limits(max_keepalive_connections=2))
+
 
 def enabled() -> bool:
     return bool(db.settings_get("omdb_api_key"))
@@ -12,11 +16,7 @@ def fetch(imdb_id: str):
     key = db.settings_get("omdb_api_key")
     if not key or not imdb_id:
         return None
-    r = httpx.get(
-        "https://www.omdbapi.com/",
-        params={"i": imdb_id, "apikey": key, "plot": "short"},
-        timeout=20,
-    )
+    r = _client.get("/", params={"i": imdb_id, "apikey": key, "plot": "short"})
     r.raise_for_status()
     d = r.json()
     if d.get("Response") == "False":

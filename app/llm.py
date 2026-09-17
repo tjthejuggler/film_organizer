@@ -32,7 +32,7 @@ def _chat(messages: list, force_json=True):
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
             json=payload,
-            timeout=30,
+            timeout=15,  # a slow LLM endpoint must not stall enrich per title
         )
 
     r = _post()

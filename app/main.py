@@ -631,12 +631,14 @@ def patch_title(tid: int, body: TitlePatch):
         sets.append("dedupe_key=?")
         vals.append(key)
         # wipe polluted enrichment so the next Enrich starts clean;
-        # also drop per-field edit locks — fresh identity, fresh values
+        # also drop per-field edit locks and reset the retry counters —
+        # fresh identity, fresh values, full attempt budget again
         sets.append(
             "match_status='unmatched', match_error=NULL, enriched_at=NULL, "
             "data_source=NULL, tmdb_id=NULL, imdb_id=NULL, overview=NULL, "
             "rating_imdb=NULL, rating_tmdb=NULL, poster=NULL, backdrop=NULL, "
-            "stars='[]', genres='[]', manual_edits='[]'"
+            "stars='[]', genres='[]', manual_edits='[]', "
+            "enrich_attempts=0, backfill_miss=0"
         )
         sets.append("title_locked=1, kind_locked=1")
         vals.append(tid)

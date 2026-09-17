@@ -5,6 +5,7 @@ Scoring combines normalised-string similarity and token overlap, with a
 year-proximity bonus/penalty so remakes pick the right candidate.
 """
 import difflib
+import threading
 import time
 
 import httpx
@@ -13,6 +14,12 @@ from . import config, db, parser
 
 BASE = "https://api.themoviedb.org/3"
 _last_call = 0.0
+_rl = threading.Lock()  # throttle is global; some lookups now run concurrently
+
+# ONE shared client for the whole process: keep-alive connection pooling
+# avoids a fresh DNS + TCP + TLS handshake per call — with a fresh
+# httpx.get() each time, a slow resolver can add seconds to EVERY lookup
+_client = httpx.Client(base_url=BASE, timeout=20, limits=httpx.Limits(max_keepalive_connections=4))
 
 
 def enabled() -> bool:
@@ -24,13 +31,15 @@ def _get(path: str, **params) -> dict:
     key = db.settings_get("tmdb_api_key")
     if not key:
         raise RuntimeError("TMDB api key not configured")
-    # light rate limiting (~4 req/s)
-    global_wait = 0.25 - (time.monotonic() - _last_call)
-    if global_wait > 0:
-        time.sleep(global_wait)
-    _last_call = time.monotonic()
+    # light rate limiting (~4 req/s), thread-safe now that cert/OMDb run
+    # concurrently inside a single enrichment
+    with _rl:
+        wait = 0.25 - (time.monotonic() - _last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.monotonic()
     params["api_key"] = key
-    r = httpx.get(f"{BASE}{path}", params=params, timeout=20)
+    r = _client.get(path, params=params)
     r.raise_for_status()
     return r.json()
 

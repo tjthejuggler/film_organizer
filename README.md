@@ -37,6 +37,45 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-17** — **Enrich no longer redoes old work**: pressing Enrich used
+  to re-attempt every failed row forever AND the auto-chained Backfill
+  re-fetched every matched row whose RT score stayed NULL (354 rows here —
+  most simply have no RT/cert data at the providers) on EVERY run. Now:
+  [`titles.enrich_attempts`](app/db.py) counts failed enrich passes and the
+  default run stops selecting rows after 3 failures ([`run_enrich`](app/enrich.py));
+  [`titles.backfill_miss`](app/db.py) counts backfill passes where none of a
+  row's missing fields got filled and the row is dropped from selection
+  after 2 such passes — any pass that DOES fill a goal resets its counter,
+  so rows self-heal when providers add data. Force Enrich and per-row
+  enriches ignore the caps; editing a title's identity (re-key) resets its
+  budget. Verified live: enrich re-run selects 0/918 rows at steady state;
+  backfill converged 354 → 313 → 0 (138 goals genuinely filled along the way).
+- **2026-09-17** — **enrich 10× faster + full visibility into what it's doing**:
+  two rounds of fixes. (1) *Why the corner toast told you nothing*: the job
+  watcher never rendered `message`, and messages only updated after each
+  title — now [`watchJob()`](static/app.js) shows a live line naming the
+  title AND its on-disk file path (via new
+  [`_first_path()`](app/enrich.py)) so junk entries (personal recordings,
+  comedy specials, courses) are identifiable mid-run, plus a "LLM name
+  cleanup running… (~15s)" warning logged BEFORE the slow step, and a
+  per-title `<title> -> status (Ns)` duration log. (2) *Why it was slow*: a
+  live test caught one title taking 96.5s — root cause was a fresh
+  DNS+TCP+TLS handshake per API call; both providers now share keep-alive
+  clients ([`tmdb._client`](app/tmdb.py), [`omdb._client`](app/omdb.py)),
+  cert+OMDb fetch concurrently, and up to 4 titles enrich in parallel with
+  the shared rate limiter keeping the total polite. Verified: 8 titles
+  (two needing LLM cleanup) in 10s total, worst single title 10.1s.
+  LLM timeout cut 30s→15s; skips no longer pay the 0.15s pause.
+- **2026-09-17** — **enrich speed + live status**: Enrich was slow AND silent
+  about it — the corner toast only updated after each title finished, and a
+  stubborn name burned up to two 30s LLM calls plus five sequential provider
+  round-trips with nothing on screen. Fixes: the toast now names the title
+  being looked up *before* work starts and logs a per-title `-> status (Ns)`
+  line ([`app/enrich.py`](app/enrich.py)); cert + OMDb fetches run
+  concurrently (thread-safe TMDB throttle in [`app/tmdb.py`](app/tmdb.py));
+  the LLM call timeout dropped 30s → 15s ([`app/llm.py`](app/llm.py)); and
+  skipped rows no longer pay the 0.15s politeness sleep. Runs that are
+  mostly matched rows now blast through at ~60 rows/s instead of ~6/s.
 - **2026-09-16** — **mobile collapsible header**: on viewports ≤720px the
   stats line, search/action buttons and the whole filter bar now collapse
   into a single `☰ N titles ▾` row ([`.mToggle`](static/style.css:67)) —

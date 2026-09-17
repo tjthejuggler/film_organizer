@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS titles(
     match_status   TEXT DEFAULT 'unmatched',
     match_error    TEXT,
     llm_attempts   INTEGER DEFAULT 0,
+    enrich_attempts INTEGER DEFAULT 0,  -- failed full-enrich passes; capped (see migrations)
+    backfill_miss  INTEGER DEFAULT 0,   -- backfill passes that found nothing; capped
     cert           TEXT,
     rating_rt      INTEGER,
     wanted         INTEGER DEFAULT 0,
@@ -236,6 +238,17 @@ def ensure():
         # miniseries and filterable via the genre dropdown
         if "is_miniseries" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN is_miniseries INTEGER DEFAULT 0")
+        # failed-enrich attempt counter: once a row failed ENOUGH times
+        # (no TMDB match / provider errors), the default Enrich run stops
+        # retrying it — re-running Enrich must not redo the same old work
+        if "enrich_attempts" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN enrich_attempts INTEGER DEFAULT 0")
+        # backfill "found nothing" counter: after a couple of passes where
+        # a row's missing cert/RT/miniseries could NOT be filled (the data
+        # simply doesn't exist at the providers), the backfill stops
+        # re-fetching it on every run; a successful write resets it to 0
+        if "backfill_miss" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN backfill_miss INTEGER DEFAULT 0")
         # hidden: tucked-away rows — excluded from the default list, never
         # deleted; reachable again via the Hidden filter
         if "hidden" not in cols:

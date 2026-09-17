@@ -934,11 +934,16 @@ function watchJob(jid, label, onDone) {
     const j = await api(`/api/jobs/${jid}`);
     const pct = j.total ? Math.round(100 * j.progress / j.total) : (j.status === "done" ? 100 : 5);
     $("#tFill").style.width = pct + "%";
+    // live job message: names the title + file path currently being worked
+    // on — this is how you spot a run stuck on a junk entry (it also shows
+    // the "LLM cleanup running…" warnings for the slowest step)
+    $("#tMsg").textContent = j.message || "";
     $("#tLog").textContent = j.log.join("\n");
     $("#tLog").scrollTop = $("#tLog").scrollHeight;
     if (j.status !== "running") {
       clearInterval(jobTimer);
       $("#tTitle").textContent = `${label} — ${j.status}`;
+      $("#tMsg").textContent = j.message || "";
       load();
       if (onDone && j.status === "done") onDone();
     }
