@@ -338,6 +338,37 @@ data/         SQLite DB (gitignored)
 
 ## Changelog
 
+- **2026-09-17 (17)** — **duplicate series rows merge into ONE show**:
+  Euphoria was split across EIGHT catalog rows (one per file — a release
+  named `Euphoria.US.S02E01…` was parsed as the website `euphoria.us`, the
+  whole title vanished and every file anchored on its own raw stem); The
+  Righteous Gemstones and The Life & Times of Tim each split in two
+  (release folder `righteous.gemstones.s04` without "The", and `&` vs
+  `and` producing different dedupe keys); Tampopo split in two
+  (`Tampopo.cd2.avi` — the disc tag parsed as part of the title). Fixes,
+  in layers:
+  [parser.py](app/parser.py) — `.us`/`.uk` are no longer treated as site
+  TLDs (they spell the country in release names), `&` normalizes to
+  `and` in [`normalize_key()`](app/parser.py:132), new
+  [`series_title_key()`](app/parser.py:251) folds leading article +
+  trailing US/UK token, and `Title - 101 - Episode Name` pod numbering now
+  parses as SxxEyy; new [consolidate.py](app/consolidate.py) heals the DB
+  (merges rows sharing one tmdb_id, then folded-key rows whose matches
+  agree — The Office UK/US style conflicts stay separate), moving files,
+  season calendar, notifications, recommendations and queue entries onto
+  the survivor and re-aggregating counts — now for MOVIES too (same
+  tmdb_id, e.g. the Tampopo CDs; folded-title movies additionally need
+  the same year); [scanner.py](app/scanner.py)
+  keeps variants attached via a series alias map and runs consolidation
+  after each scan; [main.py](app/main.py) runs it at startup and exposes
+  the programmatic check: `GET /api/consolidation/suspects` reports every
+  duplicate group the auto-merge deliberately leaves alone (user-locked
+  rows, conflicting TMDB matches like Office UK/US, ambiguous no-year
+  movies) for human review, `POST /api/consolidation/run` merges on
+  demand. First run merged 12 stale rows (Euphoria 8→1, Gemstones 2→1,
+  Tim 2→1, Human 2→1, Impractical Jokers 3→1) and the movie round merged
+  Tampopo 2→1; the suspects report is the standing way to FIND stragglers
+  instead of dealing with them one at a time.
 - **2026-09-14 (16)** — **move only chosen seasons of a series**: the series
   drawer's *Move to:* row gains a ✏️ button that opens a season picker —
   tick the seasons to move, press 💻/🔌, and only those travel; unticked

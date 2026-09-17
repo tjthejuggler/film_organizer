@@ -16,7 +16,7 @@ Grouping rules
 import os
 from datetime import datetime, timezone
 
-from . import config, db, notifications, parser
+from . import config, consolidate, db, notifications, parser
 from .db import q, q1, tx
 
 CONTAINER_NAMES = {
@@ -125,6 +125,17 @@ def scan_roots(job_id: str, roots: list):
         from .jobs import log
         log(job_id, f"Protecting {len(locked)} user-locked title identit(y/ies)")
 
+    # series alias map: every existing series row claims its LOOSE title
+    # identity (leading article / trailing US-UK token / '&' spelling
+    # folded away), so variant parses ("righteous.gemstones.s04" vs
+    # "The Righteous Gemstones", "Euphoria US" vs "Euphoria") attach to
+    # the SAME row instead of re-creating splits consolidation healed.
+    # Matched rows win the alias; oldest row breaks ties.
+    aliases = {}
+    for r in q("""SELECT dedupe_key, title FROM titles WHERE kind='series'
+                  ORDER BY CASE WHEN match_status='matched' THEN 0 ELSE 1 END, id"""):
+        aliases.setdefault(parser.series_title_key(r["title"]), r["dedupe_key"])
+
     planned = []
     for root in roots:
         root = os.path.abspath(root)
@@ -191,6 +202,8 @@ def scan_roots(job_id: str, roots: list):
             # watched_manual).
             watched = parser.watched_marker(path) is True
 
+            if gk is None and kind == "series":
+                gk = aliases.get(parser.series_title_key(title))
             if gk is None:
                 gk = dedupe_key(kind, title, year)
             g = groups.get(gk)
@@ -346,6 +359,14 @@ def scan_roots(job_id: str, roots: list):
 
     update(job_id, progress=total, message=f"Done: {len(groups)} titles, {done} files")
     log(job_id, "Scan complete.")
+    # heal any splits the scan surfaced (tmdb-same / folded-key series
+    # duplicates): runs AFTER the sync transaction so it sees final rows
+    try:
+        n = consolidate.run()
+        if n:
+            log(job_id, f"Consolidated {n} duplicate series row(s) into their show")
+    except Exception:
+        pass  # consolidation must never fail a scan
     return len(groups), done
 
 

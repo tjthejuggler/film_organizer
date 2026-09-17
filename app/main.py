@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, drivequeue, duplicates, enrich, episodes, fileops, jobs, llm, lut_sync, mover, notifications, pairing, recommender, scanner, seasons, tmdb, watchnext
+from . import config, consolidate, db, drivequeue, duplicates, enrich, episodes, fileops, jobs, llm, lut_sync, mover, notifications, pairing, recommender, scanner, seasons, tmdb, watchnext
 
 db.init()
 pairing.ensure_schema()
@@ -28,6 +28,13 @@ def _startup_refill():
         recommender.maybe_refill("startup")
     except Exception:
         pass  # never block boot over recommendations
+    # series consolidation: fold duplicate rows of the SAME show (left over
+    # from old parser bugs) before anything reads the catalog; cheap gate
+    # makes this a no-op on a healthy library
+    try:
+        consolidate.run()
+    except Exception:
+        pass  # consolidation must never block boot
     # season calendar: seed once (web-researched facts), then poll weekly
     try:
         if not db.q1("SELECT 1 FROM season_watch LIMIT 1"):
@@ -1361,6 +1368,21 @@ def clear_watch_next(tid: int):
 @app.get("/api/duplicates")
 def list_duplicates():
     return {"groups": duplicates.find_duplicates()}
+
+
+# ---- consolidation ----------------------------------------------------------
+@app.get("/api/consolidation/suspects")
+def list_consolidation_suspects():
+    """Programmatic duplicate check: title groups the auto-merge leaves
+    alone (user-locked same-tmdb rows, conflicting TMDB matches, ambiguous
+    no-year movies) — review these by hand instead of case-by-case hunting."""
+    return {"groups": consolidate.suspects()}
+
+
+@app.post("/api/consolidation/run")
+def run_consolidation():
+    """Manual trigger: heal duplicate title rows now (no restart/scan needed)."""
+    return {"merged": consolidate.run()}
 
 
 class DeleteCopyIn(BaseModel):

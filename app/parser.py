@@ -36,7 +36,11 @@ CAMERA_CLIP_RE = re.compile(
 
 VLC_RE = re.compile(r"^vlc[\-._ ]?record[\-._ ]?\d{4}[\-._ ]?\d{2}[\-._ ]?\d{2}[\-._ ]?\d{2}h\d{2}m\d{2}s[\-._ ]*", re.I)
 SITE_RE = re.compile(
-    r"^\s*(?:www\.)?[\w\-]{2,40}\.(?:org|com|net|io|tv|co|cc|me|xyz|to|st|biz|info|site|online|club|ru|uk|us"
+    # NOTE: .us/.uk are deliberately NOT in the TLD list — in release names
+    # "Show.US.S02E01" / "Show.UK.S01E01" spell the COUNTRY, and no real
+    # release site sits on .us/.uk; treating them as sites used to eat the
+    # whole title ("Euphoria.US..." -> empty -> one junk row per file)
+    r"^\s*(?:www\.)?[\w\-]{2,40}\.(?:org|com|net|io|tv|co|cc|me|xyz|to|st|biz|info|site|online|club|ru"
     r"|su|pw|top|vip|pro|icu|cyou|cfd|sbs|pics|cam|fun|link|live|one|now|page|app|dev|fyi|gg|fm)\b[\s._\-]*",
     re.I,
 )
@@ -53,6 +57,12 @@ EP_TAG_RE = re.compile(r"\be(?:p)?[\s._]?(\d{1,3})\b", re.I)
 # documentary packs: "Series 2 03of10 ..." or bare "04of12"
 SERIES_WORD_RE = re.compile(r"\bseries[\s._]?(\d{1,2})\b", re.I)
 OF_RE = re.compile(r"\b(\d{1,3})\s*(?:of|/)\s*(\d{1,3})\b", re.I)
+# "Title - 101 - Episode Name" pod numbering: leading digit(s) season, last
+# two episode ("101" -> S01E01). Year-like pods (1917/2019) are excluded —
+# those dashes separate a title from a year, not an episode tag.
+DASHED_EP_RE = re.compile(
+    r"^(?P<title>.+?)\s*[-\u2013\u2014]\s*"
+    r"(?P<pod>(?!(?:18|19|20)\d{2}\b)\d{3,4})\s*[-\u2013\u2014]\s+\S")
 
 # --- junk-token machinery -------------------------------------------------
 _MISC_WORDS = {
@@ -83,6 +93,9 @@ _RE_SOURCE = re.compile(
     r"screener|dubbed)$", re.I)
 _RE_RANGE = re.compile(r"^(?:hdr10plus|hdr10|hdr|dv|dovi|dolbyvision)$", re.I)
 _RE_SE_TAG = re.compile(r"^(?:s\d{1,3}|e(?:p)?\d{1,4})$", re.I)
+# multi-file discs: "Tampopo.cd1"/"Movie disc2"/"...pt3" — the disc tag is
+# junk, NOT part of the title (it used to key "Tampopo cd2" as its own movie)
+_RE_DISC = re.compile(r"^(?:cd|disc|dvd|part|pt)\d{1,2}$", re.I)
 
 
 def _part_is_junk(part: str) -> bool:
@@ -107,6 +120,8 @@ def _part_is_junk(part: str) -> bool:
         return True
     if _RE_SE_TAG.match(c):
         return True
+    if _RE_DISC.match(c):
+        return True
     return c in _MISC_WORDS or c in _GROUP_WORDS
 
 
@@ -130,7 +145,8 @@ def _tidy(s: str) -> str:
 
 
 def normalize_key(title: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (title or "").lower())
+    # "&" is spelled out so "Life & Times" / "Life and Times" fold to one key
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"&", " and ", (title or "").lower()))
 
 
 def _strip_wrappers(raw: str) -> str:
@@ -162,6 +178,14 @@ def parse_name(raw: str) -> dict:
 
     season = episode = end_episode = year = None
     tag_starts = []
+
+    # "Title - 101 - Episode Name" pod numbering (S01E01 in disguise):
+    # season+episode come from the pod, the title is what precedes it
+    md = DASHED_EP_RE.match(s)
+    if md and not (SXE_RE.search(s) or ALT_SXE_RE.search(s)):
+        season = int(md.group("pod")[:-2]) or 1
+        episode = int(md.group("pod")[-2:])
+        tag_starts.append(md.start("pod"))
 
     m = SXE_RE.search(s) or ALT_SXE_RE.search(s)
     if m:
@@ -242,6 +266,20 @@ def parse_name(raw: str) -> dict:
 
 def norm_component(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+_ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.I)
+_TRAILING_COUNTRY_RE = re.compile(r"\s+(us|uk)$", re.I)
+
+
+def series_title_key(title: str) -> str:
+    """Loose series identity: normalized key with the leading article
+    dropped and a trailing US/UK country token folded away, so
+    'Righteous Gemstones' == 'The Righteous Gemstones' and
+    'Euphoria US' == 'Euphoria'. Year is deliberately NOT part of a
+    series identity. Only for GROUPING — display titles stay untouched."""
+    t = _TRAILING_COUNTRY_RE.sub("", (title or "").strip())
+    return re.sub(r"^the", "", _ARTICLE_RE.sub("", normalize_key(t)))
 
 
 def is_camera_name(stem: str) -> bool:
