@@ -45,6 +45,18 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
     "&" + { "&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "#39" }[c] + ";");
 }
+/* Route remote images through the server's local cache: the browser never
+   talks to image.tmdb.org, so posters come from disk and load instantly. */
+function imgSrc(u) {
+  if (!u) return "";
+  return u.startsWith("https://image.tmdb.org/")
+    ? "/img?u=" + encodeURIComponent(u)
+    : u;
+}
+function imgTag(cls, u, lazy = true) {
+  return u ? `<img class="${cls}"${lazy ? ' loading="lazy"' : ""} src="${esc(imgSrc(u))}">`
+           : `<div class="${cls} ph">🎬</div>`;
+}
 
 async function api(path, opts = {}) {
   const init = { method: opts.method || "GET", ...opts };
@@ -191,8 +203,7 @@ function renderRows() {
       ? '<span class="badge next" title="Pinned as Watch Next — copy sits in the aaNext folder inside the internal storage">▶ next</span>' : "";
     return `<tr data-id="${t.id}" class="${isNext ? "is-next" : ""}${isOnline ? " is-online" : ""}${t.wanted ? " is-wanted" : ""}${t.history ? " is-history" : ""}${allOff ? " is-offline" : ""}${t.hidden ? " is-hidden" : ""}">
       <td><div class="tcell">
-        ${t.poster ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
-                   : `<div class="thumb ph">🎬</div>`}
+        ${imgTag("thumb", t.poster)}
         <div>
           <div class="tname">${esc(t.title)}<button class="copybtn" data-copy="${esc(t.title)}"
             title="Copy title to clipboard">⧉</button></div>
@@ -390,15 +401,31 @@ async function refreshDriveQueue() {
     <li class="qdrive">
       <span class="path" title="${esc(g.drive)}">💾 ${esc(g.drive)}</span>
       ${g.mounted
-        ? '<span class="st" style="color:var(--ok)">connected — will run now</span>'
+        ? '<span class="st" style="color:var(--ok)">connected</span>'
         : '<span class="off">waiting for connection</span>'}
     </li>
-    ${g.items.map(it => `
+    ${g.items.map(it => {
+      // an entry may wait for MORE drives than this group's primary one:
+      // only say "will run now" when every drive it needs is mounted
+      const itemDrives = it.drives || [g.drive];
+      const missing = it.missing || [];
+      const wait = it.ready ? "" : missing.length
+        ? `<div class="dim" style="font-size:11.5px">⏳ also waiting for: ${esc(missing.join(", "))}</div>`
+        : `<div class="dim" style="font-size:11.5px">⏳ waiting for: ${esc(itemDrives.join(", "))}</div>`;
+      return `
     <li class="qitem">
-      <span class="path" title="${esc(it.description)}">${esc(it.description)}</span>
+      <div style="flex:1;min-width:0">
+        <span class="path" title="${esc(it.description)}${it.last_error ? `\nLast error: ${it.last_error}` : ""}">${esc(it.description)}</span>
+        ${wait}
+      </div>
+      ${it.status === "error"
+        ? `<span class="badge err" title="${esc(it.last_error || "failed — will retry")}">⚠ retrying</span>`
+        : it.ready && g.mounted
+          ? '<span class="st" style="color:var(--ok)">will run now</span>'
+          : ""}
       <span class="st">${fmtDate(it.created_at)}</span>
       <button class="btn mini ghost" data-cancel-queue="${it.id}" title="Remove from queue">✕</button>
-    </li>`).join("")}`).join("")
+    </li>`;}).join("")}`).join("")
     : '<li><span class="dim">Nothing queued — every drive is caught up. 🎉</span></li>';
 }
 
@@ -501,7 +528,7 @@ async function openDrawer(id) {
   ].filter(Boolean).join(" · ");
   const descText = t.overview || "No description fetched yet — run Enrich.";
   $("#dBody").innerHTML = `
-    ${t.backdrop ? `<img class="back" src="${esc(t.backdrop)}">` : ""}
+    ${imgTag("back", t.backdrop, false)}
     <h2>${esc(t.title)} ${t.year ? `<span style="color:var(--dim)">(${t.year})</span>` : ""}</h2>
     <div class="facts">${esc(facts)}</div>
     <div class="flagrow">
@@ -808,6 +835,10 @@ async function openSettings() {
   $("#s_llm_base_url").value = s.llm_base_url || "";
   $("#s_llm_model").value = s.llm_model || "";
   $("#s_internal_root").value = s.internal_root || "";
+  $("#s_backup_movies_root").value = s.backup_movies_root || "";
+  $("#s_backup_series_root").value = s.backup_series_root || "";
+  $("#s_liked_movies_root").value = s.liked_movies_root || "";
+  $("#s_liked_series_root").value = s.liked_series_root || "";
   $("#s_external_root").value = s.external_root || "";
   $("#s_move_native_dialog").checked = s.move_native_dialog !== "0";
   const { roots } = await api("/api/roots");
@@ -882,6 +913,10 @@ async function saveSettings() {
     llm_base_url: $("#s_llm_base_url").value.trim(),
     llm_model: $("#s_llm_model").value.trim(),
     internal_root: $("#s_internal_root").value.trim(),
+    backup_movies_root: $("#s_backup_movies_root").value.trim(),
+    backup_series_root: $("#s_backup_series_root").value.trim(),
+    liked_movies_root: $("#s_liked_movies_root").value.trim(),
+    liked_series_root: $("#s_liked_series_root").value.trim(),
     external_root: $("#s_external_root").value.trim(),
     move_native_dialog: $("#s_move_native_dialog").checked ? "1" : "0",
   } } });
@@ -1241,8 +1276,7 @@ function renderHistCandidates(r, formBody) {
     for (const t of r.local) {
       cards.push(`
         <div class="cand">
-          ${t.poster ? `<img class="candimg" loading="lazy" src="${esc(t.poster)}">`
-                     : `<div class="candimg ph">🎬</div>`}
+          ${imgTag("candimg", t.poster)}
           <div class="candtxt">
             <b>${esc(t.title)}</b>${t.year ? ` <span class="dim">(${t.year})</span>` : ""}
             <span class="badge ${t.kind}">${t.kind}</span>
@@ -1260,8 +1294,7 @@ function renderHistCandidates(r, formBody) {
     for (const c of r.tmdb) {
       cards.push(`
         <div class="cand">
-          ${c.poster ? `<img class="candimg" loading="lazy" src="${esc(c.poster)}">`
-                     : `<div class="candimg ph">🎬</div>`}
+          ${imgTag("candimg", c.poster)}
           <div class="candtxt">
             <b>${esc(c.name)}</b>${c.year ? ` <span class="dim">(${c.year})</span>` : ""}
             <div class="dim">${esc(c.overview || "")}</div>
@@ -1446,10 +1479,9 @@ function renderRec(m, pending) {
   const kindLabel = m.is_miniseries ? "miniseries" : m.kind;
   $("#recBody").innerHTML = `
     <div class="reccard">
-      ${m.backdrop ? `<img class="recback" src="${esc(m.backdrop)}">` : ""}
+      ${imgTag("recback", m.backdrop, false)}
       <div class="recmain">
-        ${m.poster ? `<img class="recposter" src="${esc(m.poster)}">`
-                   : `<div class="recposter ph">🎬</div>`}
+        ${imgTag("recposter", m.poster, false)}
         <div class="recinfo">
           <h3>${esc(m.title)} ${m.year ? `<span class="dim">(${m.year})</span>` : ""}</h3>
           <div class="facts">${esc(recMetaFacts(m))}</div>
@@ -1551,9 +1583,7 @@ function calPattern(e) {
 }
 
 function renderRecentItem(e) {
-  const poster = e.poster
-    ? `<img class="thumb" loading="lazy" src="${esc(e.poster)}">`
-    : `<div class="thumb ph">🎬</div>`;
+  const poster = imgTag("thumb", e.poster);
   return `<div class="notifitem calitem cal-recent${e.is_new ? " cal-new" : ""}" data-open-title="${e.title_id}">
     <div class="ntop">
       ${poster}
@@ -1575,9 +1605,7 @@ function renderCalItem(e) {
   const days = (e.status === "announced" && typeof e.days_until === "number")
     ? (e.days_until === 0 ? "today" : e.days_until < 0 ? "airing/ended"
        : `in ${e.days_until} day${e.days_until === 1 ? "" : "s"}`) : "";
-  const poster = e.poster
-    ? `<img class="thumb" loading="lazy" src="${esc(e.poster)}">`
-    : `<div class="thumb ph">🎬</div>`;
+  const poster = imgTag("thumb", e.poster);
   return `<div class="notifitem calitem cal-${esc(e.status)}${e.is_new ? " cal-new" : ""}" data-open-title="${e.title_id}">
     <div class="ntop">
       ${poster}
@@ -1684,9 +1712,7 @@ async function refreshBellPill() {
 
 function renderNotifItem(n) {
   const t = n.title || {};
-  const poster = t.poster
-    ? `<img class="thumb" loading="lazy" src="${esc(t.poster)}">`
-    : `<div class="thumb ph">🎬</div>`;
+  const poster = imgTag("thumb", t.poster);
   const kindLabel = t.is_miniseries ? "miniseries" : (t.kind || "");
   return `<div class="notifitem" data-nid="${n.id}">
     <div class="ntop">

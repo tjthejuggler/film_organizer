@@ -24,16 +24,22 @@ def _now() -> str:
 
 
 def _lives_only_on_backup(title_id: int) -> bool:
-    """True when every non-missing file already sits on the backup drive —
-    nothing to back up, so no notification."""
-    ext = fileops.backup_root()
-    if not ext:
+    """True when every non-missing file already sits under one of the
+    title's backup destinations (regular per-kind root or any liked root)
+    — nothing to back up, so no notification."""
+    t = q1("SELECT kind FROM titles WHERE id=?", (title_id,))
+    if not t:
+        return True
+    roots = [r for r in (fileops.regular_root(t["kind"]),
+                         fileops.liked_root(t["kind"]),
+                         fileops.backup_root()) if r]
+    if not roots:
         return False
-    ext = ext.rstrip(os.sep) + os.sep
+    prefixed = [os.path.abspath(r).rstrip(os.sep) + os.sep for r in roots]
     for f in q("SELECT path FROM files WHERE title_id=? AND missing=0",
                (title_id,)):
-        p = os.path.abspath(f["path"])
-        if not (p + os.sep).startswith(ext):
+        p = os.path.abspath(f["path"]) + os.sep
+        if not any(p.startswith(x) for x in prefixed):
             return False
     return True
 
@@ -97,14 +103,21 @@ def pending_count() -> int:
     return q1("SELECT COUNT(*) n FROM notifications WHERE status='pending'")["n"]
 
 
-def _offline_backup_roots() -> set:
-    """Which roots the backup would need that are currently not mounted.
-    The move target is the backup drive (normalized external_root); also
-    treat every enabled library root that is not accessible as unavailable."""
-    ext = fileops.backup_root()
-    if not ext:
+def _offline_backup_roots(title_id: int) -> set:
+    """Which of this title's backup destinations are currently not mounted.
+    The move target is the title's regular per-kind backup root; a liked
+    title also needs its liked drive. Empty set = everything accessible."""
+    t = q1("SELECT kind FROM titles WHERE id=?", (title_id,))
+    if not t:
         return set()
-    return set() if os.path.isdir(ext) else {ext}
+    roots = {r for r in (fileops.regular_root(t["kind"]),
+                         fileops.liked_root(t["kind"])) if r}
+    # dedupe nested roots (keep the longest): a liked folder inside the
+    # regular drive would otherwise name the same device twice
+    roots = {r for r in roots
+             if not any(r != o and r.startswith(o.rstrip(os.sep) + os.sep)
+                        for o in roots)}
+    return {r for r in roots if not os.path.isdir(r)}
 
 
 def decide(notification_id: int, decision: str, queue_when_offline: bool = True):
@@ -130,16 +143,20 @@ def decide(notification_id: int, decision: str, queue_when_offline: bool = True)
     if decision != "accept":
         raise ValueError("decision must be 'accept' or 'reject'")
 
-    # drive check BEFORE any bytes move: tell the user which drive to plug in
-    offline = _offline_backup_roots()
+    # drive check BEFORE any bytes move: tell the user which drive to plug
+    # in (a liked title needs BOTH its regular backup drive and its liked
+    # drive to complete the two-place backup)
+    offline = _offline_backup_roots(n["title_id"])
     if offline:
         from . import drivequeue
         if queue_when_offline:
             trow = q1("SELECT title FROM titles WHERE id=?", (n["title_id"],))
             tname = trow["title"] if trow else f"#{n['title_id']}"
+            drives = sorted(offline)
             qid, created = drivequeue.enqueue(
-                "move", n["title_id"], sorted(offline)[0],
-                {"target": "external", "notification_id": notification_id},
+                "move", n["title_id"], drives[0],
+                {"target": "external", "notification_id": notification_id,
+                 "drives": drives},
                 f"Move '{tname}' to the backup drive")
             if created:
                 with tx() as c:
@@ -149,7 +166,7 @@ def decide(notification_id: int, decision: str, queue_when_offline: bool = True)
             return {"ok": True, "status": "queued",
                     "queued": created,
                     "queue_id": qid,
-                    "missing_drives": sorted(offline)}
+                    "missing_drives": drives}
         return {
             "ok": False,
             "status": "pending",
@@ -172,6 +189,12 @@ def decide(notification_id: int, decision: str, queue_when_offline: bool = True)
         error = None
         try:
             mover.move_title(job, n["title_id"], "external")
+            # favorite = two backup places: after the regular move lands,
+            # top up the liked-drive copy (skipped quietly when no liked
+            # folder is configured for this kind)
+            from . import liked
+            liked.sync_liked_copy(title_id=n["title_id"],
+                                  log=lambda msg: jobs.log(job, msg))
         except Exception as e:
             jobs.log(job, f"FAILED: {e}")
             error = str(e)

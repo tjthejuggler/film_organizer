@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS drive_queue(
     description TEXT,            -- human-readable, shown in Settings
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending|running|done|error|cancelled
     last_error  TEXT,
+    attempts    INTEGER DEFAULT 0,  -- failed-run counter (retry cap, see drivequeue)
     job_id      TEXT,            -- jobs.id of the auto-started run
     created_at  TEXT DEFAULT (datetime('now')),
     ran_at      TEXT
@@ -290,6 +291,10 @@ def ensure():
                 "DROP TABLE drive_queue_legacy;"
                 "CREATE INDEX IF NOT EXISTS idx_drive_queue_status ON drive_queue(status);"
                 "CREATE INDEX IF NOT EXISTS idx_drive_queue_drive  ON drive_queue(drive);")
+        # drive_queue.attempts: failed-run counter for the retry cap
+        dq_cols = {r[1] for r in con.execute("PRAGMA table_info(drive_queue)")}
+        if "attempts" not in dq_cols:
+            con.execute("ALTER TABLE drive_queue ADD COLUMN attempts INTEGER DEFAULT 0")
         # indexes on migrated columns must come after the ALTERs above
         con.execute("CREATE INDEX IF NOT EXISTS idx_titles_wanted ON titles(wanted)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_titles_fav ON titles(favorite)")

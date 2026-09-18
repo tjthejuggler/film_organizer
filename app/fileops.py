@@ -16,13 +16,16 @@ SIDECAR_EXTS = SUBTITLE_EXTS | {".nfo", ".txt", ".jpg", ".jpeg", ".png"}
 
 
 def backup_root() -> str:
-    """Normalized backup-drive root from the external_root setting.
+    """Normalized LEGACY backup-drive root from the external_root setting.
 
     The backup layout keeps Movies/ and Series/ side by side on the drive;
     when the setting points INTO one of those kind folders (e.g.
     /media/X10 Pro/Movies), the actual drive root is one level up — so
     movies keep landing in the existing Movies/ and series get a sibling
-    Series/. Empty string when no external root is configured."""
+    Series/. Empty string when no external root is configured.
+
+    Legacy only: the per-kind backup_movies_root / backup_series_root
+    settings take precedence when set (see regular_root)."""
     ext = db.settings_get("external_root")
     if not ext:
         return ""
@@ -31,6 +34,44 @@ def backup_root() -> str:
     if os.path.basename(root).lower() in kind_dirs:
         root = os.path.dirname(root)
     return root
+
+
+def regular_root(kind: str) -> str:
+    """Regular backup destination for a kind ('movie' | 'series'): where
+    EVERY title of that kind gets backed up. The per-kind setting wins;
+    with both per-kind keys empty the legacy external_root drive is used,
+    titles landing in its Movies/ / Series/ subfolder as before. Empty
+    string when nothing is configured."""
+    key = "backup_movies_root" if kind == "movie" else "backup_series_root"
+    own = db.settings_get(key)
+    if own:
+        return os.path.abspath(own)
+    bk = backup_root()  # legacy single drive ("" when unset)
+    if not bk:
+        return ""
+    sub = config.EXTERNAL_SUBDIRS.get(kind)
+    return os.path.join(bk, sub) if sub else bk
+
+
+def liked_root(kind: str) -> str:
+    """ADDITIONAL liked-only destination for a kind: favorites also get
+    copied here (their second backup place). Empty string when unset —
+    liked copies are optional per kind."""
+    key = "liked_movies_root" if kind == "movie" else "liked_series_root"
+    own = db.settings_get(key)
+    return os.path.abspath(own) if own else ""
+
+
+def all_backup_roots() -> list:
+    """Every configured backup destination (regular + liked + legacy drive),
+    longest first — for 'is this path on a backup drive' prefix checks."""
+    roots = {backup_root()}
+    for kind in ("movie", "series"):
+        roots.add(regular_root(kind))
+        roots.add(liked_root(kind))
+    roots.discard("")
+    return sorted((os.path.abspath(r) for r in roots),
+                  key=len, reverse=True)
 
 
 def like_under(folder: str) -> str:

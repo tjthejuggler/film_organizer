@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, consolidate, db, drivequeue, duplicates, enrich, episodes, fileops, jobs, llm, lut_sync, mover, notifications, pairing, recommender, scanner, seasons, tmdb, watchnext
+from . import config, consolidate, db, drivequeue, duplicates, enrich, episodes, fileops, imgcache, jobs, liked, llm, lut_sync, mover, notifications, pairing, recommender, scanner, seasons, tmdb, watchnext
 
 db.init()
 pairing.ensure_schema()
@@ -46,7 +46,18 @@ def _startup_refill():
         pass  # the season calendar must never block boot
     # drive-queue worker: runs queued moves/deletes whenever their drive
     # gets connected — also drains anything queued while the app was off
+    try:
+        drivequeue.repost_errors()  # requeue entries stranded by the old
+        # no-retry behaviour so the fixed worker drains them
+    except Exception:
+        pass
     threading.Thread(target=drivequeue.worker_loop, daemon=True).start()
+    # pre-download every catalog poster/backdrop into data/imgcache/ so the
+    # UI never has to reach image.tmdb.org over the WAN
+    try:
+        imgcache.warm_async()
+    except Exception:
+        pass  # images must never block boot
 
 
 @app.middleware("http")
@@ -361,6 +372,13 @@ def index():
     return FileResponse(os.path.join(config.STATIC_DIR, "index.html"))
 
 
+@app.get("/img")
+def img(u: str):
+    """Serve a cached TMDB poster/backdrop from disk (downloads once on
+    first request; the frontend rewrites all image URLs through this)."""
+    return imgcache.serve(u)
+
+
 @app.get("/favicon.ico")
 def favicon():
     # no-store: browsers otherwise pin the tab icon per origin for weeks,
@@ -507,16 +525,18 @@ def list_titles(
 def _storage_sides(files: list) -> set:
     """{'internal','external'} sides where this title's accessible files
     live — both sides at once means a duplicated title, and the drawer
-    then offers BOTH move buttons (either click consolidates)."""
-    ext = fileops.backup_root()
-    if ext:
-        ext = ext.rstrip(os.sep) + os.sep
+    then offers BOTH move buttons (either click consolidates). 'external'
+    means any backup destination (the legacy drive, a per-kind regular
+    backup root or a liked drive)."""
+    roots = [os.path.abspath(r).rstrip(os.sep) + os.sep
+             for r in fileops.all_backup_roots()]
     sides = set()
     for f in files:
         if f["missing"]:
             continue
-        on_ext = bool(ext) and (os.path.abspath(f["path"]) + os.sep).startswith(ext)
-        sides.add("external" if on_ext else "internal")
+        p = os.path.abspath(f["path"]) + os.sep
+        sides.add("external" if any(p.startswith(r) for r in roots)
+                  else "internal")
     return sides
 
 
@@ -705,9 +725,38 @@ def set_episodes_watched(tid: int, body: SeasonWatchedIn):
 
 @app.post("/api/titles/{tid}/favorite")
 def set_favorite(tid: int, body: FlagIn):
-    _get_title_or_404(tid)
+    """Toggle the like flag. LIKING a title keeps its two-place backup
+    contract: a background job tops up the additional liked-drive copy
+    (no-op when no liked folder is configured for this kind). UN-LIKING
+    removes that secondary copy again — the regular backup stays."""
+    row = _get_title_or_404(tid)
     with db.tx() as c:
-        c.execute("UPDATE titles SET favorite=? WHERE id=?", (1 if body.value else 0, tid))
+        c.execute("UPDATE titles SET favorite=? WHERE id=?",
+                  (1 if body.value else 0, tid))
+    if body.value:
+        try:
+            if fileops.liked_root(row["kind"]):
+                jid = jobs.create("liked_sync", total=0)
+                jobs.log(jid, f"Liked backup: '{row['title']}'")
+
+                def _run(job):
+                    error = None
+                    try:
+                        liked.sync_liked_copy(
+                            title_id=tid, log=lambda m: jobs.log(job, m))
+                    except Exception as e:
+                        jobs.log(job, f"FAILED: {e}")
+                        error = str(e)
+                    jobs.finish(job, error=error)
+
+                threading.Thread(target=_run, args=(jid,), daemon=True).start()
+        except Exception:
+            pass  # liking must succeed even when the backup cannot
+    else:
+        try:
+            liked.remove_liked_copy(tid)
+        except Exception:
+            pass  # never block the toggle on backup cleanup
     return {"ok": True, "favorite": body.value}
 
 
@@ -1071,9 +1120,11 @@ def delete_title_files(tid: int, keep_record: bool = False, queue: bool = True):
     queue (one entry per offline drive) and runs automatically once that
     drive is connected; queue=false restores the legacy 409 refusal."""
     row = _get_title_or_404(tid)
-    # id needed for the keep-record path (per-row DELETE in _delete_title_files)
+    # full rows needed: _folder_plan() reads size_bytes (folder-vs-catalog
+    # byte comparison); selecting a subset here caused a KeyError 500 on
+    # every folder-based delete
     files = [dict(f) for f in db.q(
-        "SELECT id, path, missing FROM files WHERE title_id=?", (tid,))]
+        "SELECT * FROM files WHERE title_id=?", (tid,))]
     if not files:
         # wanted-list-only entry (or files never recorded): just drop the
         # catalog row — there is nothing on disk to touch
@@ -1291,8 +1342,13 @@ def move_title(tid: int, body: MoveIn):
     seasons = sorted(set(body.seasons)) if body.seasons else None
     sel = f" (seasons {', '.join(map(str, seasons))} only)" if seasons else ""
     # target drive not connected right now? queue it — runs automatically
-    # the moment the drive is plugged in (Settings shows what is waiting)
-    dest = db.settings_get(f"{body.target}_root")
+    # the moment the drive is plugged in (Settings shows what is waiting).
+    # external destinations resolve per the title's kind (backup_movies_
+    # root vs backup_series_root; legacy external_root drive otherwise)
+    if body.target == "external":
+        dest = fileops.regular_root(row["kind"])
+    else:
+        dest = db.settings_get("internal_root")
     if dest and not os.path.isdir(os.path.abspath(dest)):
         dest = os.path.abspath(dest)
         qid, created = drivequeue.enqueue(

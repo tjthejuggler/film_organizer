@@ -71,14 +71,27 @@ def find_duplicates() -> list:
         })
 
     # --- within-title duplication (same row, files in 2+ places) ------------
+    liked_roots = {}
+    for kind in ("movie", "series"):
+        r = fileops.liked_root(kind)
+        if r:
+            liked_roots[kind] = os.path.abspath(r).rstrip(os.sep) + os.sep
     for t in q("SELECT * FROM titles"):
         if parser.normalize_key(t["title"]) in claimed_titles:
             continue  # already covered by a certain two-rows group
+        # a liked title's SECOND copy (on its liked drive) is intentional —
+        # filter it out so the two-place backup never reads as duplication
+        lk = liked_roots.get(t["kind"])
         # catalog-based, NOT filesystem-based: copies on unplugged drives
         # (missing=0 in the DB) still participate, so duplicates are found
         # across offline drives and newly plugged ones
         files = [dict(f) for f in q(
             "SELECT * FROM files WHERE title_id=? AND missing=0", (t["id"],))]
+        if lk:
+            files = [f for f in files
+                     if not (os.path.abspath(f["path"]) + os.sep).startswith(lk)]
+            if not files:
+                continue
         if len(files) < 2:
             continue
         by_root = {}

@@ -132,9 +132,33 @@
             <button class="btn mini" data-browse="s_internal_root" title="Browse…">📁</button>
           </div>
         </label>
-        <label>External folder (drive)
+        <label>Backup folder — movies (every movie goes here)
           <div class="inputrow">
-            <input id="s_external_root" placeholder="/mnt/external_drive/Movies">
+            <input id="s_backup_movies_root" placeholder="/mnt/backup_drive/Movies">
+            <button class="btn mini" data-browse="s_backup_movies_root" title="Browse…">📁</button>
+          </div>
+        </label>
+        <label>Backup folder — series (every series goes here)
+          <div class="inputrow">
+            <input id="s_backup_series_root" placeholder="/mnt/backup_drive/Series">
+            <button class="btn mini" data-browse="s_backup_series_root" title="Browse…">📁</button>
+          </div>
+        </label>
+        <label>Liked folder — movies (favorites also go here)
+          <div class="inputrow">
+            <input id="s_liked_movies_root" placeholder="/mnt/liked_drive/Movies">
+            <button class="btn mini" data-browse="s_liked_movies_root" title="Browse…">📁</button>
+          </div>
+        </label>
+        <label>Liked folder — series (favorites also go here)
+          <div class="inputrow">
+            <input id="s_liked_series_root" placeholder="/mnt/liked_drive/Series">
+            <button class="btn mini" data-browse="s_liked_series_root" title="Browse…">📁</button>
+          </div>
+        </label>
+        <label>External folder (legacy single drive — used only when both backup folders above are empty)
+          <div class="inputrow">
+            <input id="s_external_root" placeholder="/mnt/external_drive">
             <button class="btn mini" data-browse="s_external_root" title="Browse…">📁</button>
           </div>
         </label>
@@ -301,6 +325,6 @@
   <pre id="tLog"></pre>
 </div>
 
-<script src="/app.js?v=17"></script>
+<script src="/app.js?v=19"></script>
 </body>
 </html>

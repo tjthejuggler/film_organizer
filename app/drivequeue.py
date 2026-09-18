@@ -29,6 +29,12 @@ from .db import q, q1, tx
 # Only one queue runner at a time; the SSE hook and the poller may race.
 _run_lock = threading.Lock()
 
+# Retry policy for failed entries: the worker re-runs them after a backoff
+# so a freshly mounted drive can settle; past the cap the entry stays
+# 'error' and is surfaced in the queue UI (with a cancel button).
+MAX_ATTEMPTS = 5
+RETRY_BACKOFF_S = 30
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -60,7 +66,7 @@ def cancel(qid: int):
     row = q1("SELECT status FROM drive_queue WHERE id=?", (qid,))
     if not row:
         raise ValueError("queue entry not found")
-    if row["status"] != "pending":
+    if row["status"] not in ("pending", "error"):
         raise ValueError(f"cannot cancel — entry is {row['status']}")
     with tx() as c:
         c.execute("UPDATE drive_queue SET status='cancelled', ran_at=? WHERE id=?",
@@ -70,26 +76,42 @@ def cancel(qid: int):
 # ---- listing ---------------------------------------------------------------
 
 def list_pending() -> list:
-    """Pending entries grouped by drive, for the Settings UI."""
+    """Pending entries grouped by (primary) drive, for the Settings UI.
+
+    Each item carries the FULL list of drives it waits for plus which of
+    them are missing: an entry is gated on all of payload.drives, not just
+    the group's primary drive — showing only 'connected' for the primary
+    drive made the queue claim 'will run now' while it silently waited for
+    a different, unplugged drive."""
     rows = q(
         """SELECT d.id, d.kind, d.title_id, d.drive, d.description, d.created_at,
-                  t.title AS title_name
+                  d.status, d.last_error, d.payload, t.title AS title_name
            FROM drive_queue d LEFT JOIN titles t ON t.id = d.title_id
-           WHERE d.status='pending' ORDER BY d.drive, d.id""")
+           WHERE d.status IN ('pending','error') ORDER BY d.drive, d.id""")
     groups: dict = {}
     for r in rows:
         g = groups.setdefault(r["drive"], {
             "drive": r["drive"], "mounted": os.path.isdir(r["drive"]),
             "items": []})
+        try:
+            payload = json.loads(r["payload"] or "{}")
+        except ValueError:
+            payload = {}
+        drives = payload.get("drives") or [r["drive"]]
+        missing = [d for d in drives if not os.path.isdir(d)]
         g["items"].append({
             "id": r["id"], "kind": r["kind"], "title_id": r["title_id"],
             "title": r["title_name"], "description": r["description"],
-            "created_at": r["created_at"]})
+            "created_at": r["created_at"], "status": r["status"],
+            "last_error": r["last_error"],
+            "drives": drives, "missing": missing, "ready": not missing})
     return [groups[k] for k in sorted(groups)]
 
 
 def pending_count() -> int:
-    return q1("SELECT COUNT(*) n FROM drive_queue WHERE status='pending'")["n"]
+    """Pending + retryable-error entries (both show up in the queue UI)."""
+    return q1("SELECT COUNT(*) n FROM drive_queue "
+              "WHERE status IN ('pending','error')")["n"]
 
 
 # ---- execution ---------------------------------------------------------------
@@ -102,18 +124,46 @@ def _ready(entry, payload: dict) -> bool:
     return all(os.path.isdir(d) for d in _entry_drives(entry, payload))
 
 
+def _retryable(entry) -> bool:
+    """Failed entries get another chance after a short backoff, capped at
+    MAX_ATTEMPTS — a just-plugged drive often needs a few seconds to
+    settle, and one flaky poll must not dead-end the operation forever."""
+    if entry["status"] != "error":
+        return True
+    if (entry["attempts"] or 0) >= MAX_ATTEMPTS:
+        return False
+    ran_at = entry["ran_at"]
+    if not ran_at:
+        return True
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(ran_at)
+        return age.total_seconds() >= RETRY_BACKOFF_S
+    except ValueError:
+        return True
+
+
 def run_due() -> list:
-    """Run every pending entry whose drive(s) are mounted. Sequential and
-    guarded: overlapping callers (poller thread + SSE kick) simply skip."""
+    """Run every pending (or retryable failed) entry whose drive(s) are
+    mounted. Sequential and guarded: overlapping callers (poller thread +
+    SSE kick) simply skip. Statuses are re-checked per entry because a
+    previous entry's execution may have cancelled or completed this one."""
     if not _run_lock.acquire(blocking=False):
         return []
     started = []
     try:
-        for entry in q("SELECT * FROM drive_queue WHERE status='pending' ORDER BY id"):
+        entries = [dict(e) for e in q(
+            "SELECT * FROM drive_queue WHERE status IN ('pending','error') "
+            "ORDER BY id")]
+        for entry in entries:
+            if not _retryable(entry):
+                continue
+            cur = q1("SELECT status FROM drive_queue WHERE id=?", (entry["id"],))
+            if not cur or cur["status"] not in ("pending", "error"):
+                continue  # finished/cancelled by an earlier entry's run
             payload = json.loads(entry["payload"] or "{}")
             if not _ready(entry, payload):
                 continue
-            _execute(entry, payload)
+            _execute(dict(entry), payload)
             started.append(entry["id"])
     finally:
         _run_lock.release()
@@ -146,6 +196,14 @@ def _execute(entry, payload: dict):
                              payload.get("target", "external"),
                              purge_others=bool(payload.get("purge_others")),
                              seasons=payload.get("seasons") or None)
+            # favorites keep a second copy on their liked drive: top it up
+            # after the regular backup lands (no-op for non-liked titles
+            # and kinds without a liked folder configured)
+            if payload.get("target", "external") == "external":
+                from . import liked
+                liked.sync_liked_copy(
+                    title_id=entry["title_id"],
+                    log=lambda m: jobs.log(jid, m))
         elif entry["kind"] == "delete":
             _run_delete(entry, payload, jid)
         elif entry["kind"] == "delete_copy":
@@ -157,10 +215,16 @@ def _execute(entry, payload: dict):
         error = str(e)
         jobs.log(jid, f"FAILED: {error}")
         jobs.finish(jid, error=error)
+        attempts = (entry["attempts"] or 0) + 1
+        exhausted = attempts >= MAX_ATTEMPTS
         with tx() as c:
             c.execute(
                 "UPDATE drive_queue SET status='error', ran_at=?, last_error=?, "
-                "job_id=? WHERE id=?", (_now(), error, jid, entry["id"]))
+                "job_id=?, attempts=? WHERE id=?",
+                (_now(), error, jid, attempts, entry["id"]))
+        if not exhausted:
+            jobs.log(jid, f"queued job #{entry['id']} failed — will retry "
+                          f"(attempt {attempts}/{MAX_ATTEMPTS})")
         return
     jobs.finish(jid)
     with tx() as c:
@@ -189,8 +253,11 @@ def _run_delete(entry, payload: dict, jid: str):
             raise ValueError(f"drive still not connected: {d}")
 
     roots = [r["path"] for r in q("SELECT path FROM roots ORDER BY length(path) DESC")]
+    # full rows needed: _delete_title_files -> _folder_plan reads size_bytes
+    # (folder-vs-catalog byte comparison); a starved SELECT here caused
+    # KeyError 'size_bytes' and silently dead-ended every queued delete
     files = [dict(f) for f in q(
-        "SELECT id, path, missing FROM files WHERE title_id=?", (tid,))]
+        "SELECT * FROM files WHERE title_id=?", (tid,))]
 
     def root_of(p):
         for r in roots:
@@ -205,9 +272,11 @@ def _run_delete(entry, payload: dict, jid: str):
 
     # finalize only when every other offline-drive entry for this title is
     # done too — otherwise the last one to run wraps things up
+    # 'error' counts too: a retrying sibling's drive may not be done yet,
+    # so this entry must not finalize (and erase the file rows) early
     pending_same = q1(
         "SELECT COUNT(*) n FROM drive_queue "
-        "WHERE status IN ('pending','running') AND kind='delete' "
+        "WHERE status IN ('pending','running','error') AND kind='delete' "
         "AND title_id=? AND id != ?", (tid, entry["id"]))["n"]
     left = q1("SELECT COUNT(*) n FROM files WHERE title_id=?", (tid,))["n"]
     if left and pending_same:
@@ -221,3 +290,16 @@ def _run_delete(entry, payload: dict, jid: str):
                 "seasons=NULL, last_seen=? WHERE id=?", (_now(), tid))
         else:
             c.execute("DELETE FROM titles WHERE id=?", (tid,))
+
+
+def repost_errors() -> int:
+    """Boot-time data repair: entries stuck in 'error' (including ones the
+    old no-retry code dead-ended) go back to pending so the worker drains
+    them with the fixed delete query. Respects the retry cap: entries that
+    exhausted MAX_ATTEMPTS stay parked as permanent errors."""
+    with tx() as c:
+        cur = c.execute(
+            "UPDATE drive_queue SET status='pending', ran_at=NULL "
+            "WHERE status='error' AND (attempts IS NULL OR attempts < ?)",
+            (MAX_ATTEMPTS,))
+        return cur.rowcount

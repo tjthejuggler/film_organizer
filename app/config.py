@@ -26,9 +26,15 @@ WATCH_NEXT_DIRS = {
     "series": "aaNext_Series",
 }
 
-# Backup drive (external_root) layout: moved titles land in the subfolder
-# matching their kind, so the drive stays organized (internal storage keeps
-# its existing layout).
+# Backup destinations. Since the 4-way split there are FOUR user-chosen
+# folders (settings): backup_movies_root / backup_series_root — where EVERY
+# movie / series gets backed up — plus liked_movies_root / liked_series_root,
+# additional drives that favorites ALSO get copied to (a liked title ends up
+# in 2 places: its regular backup + its liked drive).
+#
+# external_root is the LEGACY single-drive setting: when both per-kind keys
+# are still empty, the old drive keeps working with the subfolder layout
+# below (Movies/ + Series/ side by side).
 EXTERNAL_SUBDIRS = {
     "movie": "Movies",
     "series": "Series",
@@ -41,6 +47,12 @@ DEFAULT_SETTINGS = {
     # storage targets for the Move feature (drawer buttons)
     "internal_root": os.path.expanduser("~/Videos"),
     "external_root": "",
+    # the four backup destinations (see the comment above EXTERNAL_SUBDIRS);
+    # per-kind regular backups + additional liked-only drives
+    "backup_movies_root": "",
+    "backup_series_root": "",
+    "liked_movies_root": "",
+    "liked_series_root": "",
     # route moves through KIO so the desktop shows its native move dialog
     # ("1" on / "0" off; falls back silently when no desktop is available)
     "move_native_dialog": "1",

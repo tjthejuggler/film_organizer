@@ -37,6 +37,34 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-18** — **drive queue actually drains now**: three bugs fixed.
+  (1) Queued deletes crashed with `KeyError: 'size_bytes'` (starved SELECT
+  in the queue's scoped delete) — every queued delete died the moment its
+  drive connected. (2) Failed entries were dead-ended as permanent 'error'
+  with no retry — now they retry up to 5 times with a 30 s backoff (a
+  freshly plugged drive can settle), and stuck entries are requeued once
+  at startup. (3) The queue UI only checked the entry's PRIMARY drive, so
+  it claimed "connected — will run now" while the entry silently waited
+  for a *different* unplugged drive; the UI now lists exactly which drives
+  are still missing per entry.
+- **2026-09-18** — **instant posters (local image cache)**: every poster /
+  backdrop is now served from `data/imgcache/` via `/img` instead of the
+  browser fetching each one from image.tmdb.org over the WAN. First request
+  downloads an image once, then it's served from disk with a 1-year immutable
+  cache; a background warmer pre-downloads the whole catalog at startup, so
+  even the first view after an enrich is instant. Also fixed: deleting a
+  title with a dedicated release folder crashed with a 500 (`KeyError:
+  'size_bytes'` in the folder-deletion planner).
+- **2026-09-17** — **four backup places (regular + liked, per kind)**: Settings
+  now has separate folders for **backup — movies**, **backup — series**,
+  **liked — movies** and **liked — series**. Every watched title backs up to
+  its kind's regular folder; ♥ favorites ALSO keep a copy on their liked
+  drive — two places at once, synced automatically (watched→backup accept,
+  drive-queue moves, and liking a title all keep the second copy up to
+  date; un-liking removes just the liked copy). The liked copies never show
+  up as duplicates and survive consolidation. The old single
+  *External folder* still works as a fallback whenever both per-kind backup
+  folders are empty (Movies/ + Series/ layout on that drive).
 - **2026-09-17** — **Enrich no longer redoes old work**: pressing Enrich used
   to re-attempt every failed row forever AND the auto-chained Backfill
   re-fetched every matched row whose RT score stayed NULL (354 rows here —

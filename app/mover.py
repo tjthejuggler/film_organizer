@@ -27,8 +27,11 @@ def _candidate_bases() -> list:
     bases = [
         db.settings_get("internal_root"),
         db.settings_get("external_root"),
-        fileops.backup_root(),  # normalized drive root (Movies//Series/ parent)
+        fileops.backup_root(),  # normalized legacy drive root
     ]
+    # the four backup destinations (per-kind regular + liked drives)
+    bases += [fileops.regular_root(k) for k in ("movie", "series")]
+    bases += [fileops.liked_root(k) for k in ("movie", "series")]
     bases += [r["path"] for r in q("SELECT path FROM roots WHERE enabled=1")]
     return [os.path.abspath(b) for b in bases if b]
 
@@ -61,41 +64,61 @@ def move_title(job_id: str, title_id: int, target: str,
     title = q1("SELECT * FROM titles WHERE id=?", (title_id,))
     if not title:
         raise ValueError("title not found")
-    dest_base = db.settings_get(f"{target}_root")
-    if not dest_base:
-        raise ValueError(f"No {target} folder configured — set it in Settings first")
-    # external = the backup drive; normalize so a setting pointing INTO the
-    # Movies folder (legacy layout) still resolves to the drive root
-    drive_root = fileops.backup_root() if target == "external" \
-        else os.path.abspath(dest_base)
+    if target == "external":
+        # the title's kind decides the destination: every movie backs up to
+        # backup_movies_root, every series to backup_series_root (the
+        # legacy external_root drive still works when the per-kind keys
+        # are empty — titles land in its Movies/ / Series/ subfolder)
+        dest_base = fileops.regular_root(title["kind"])
+        if not dest_base:
+            raise ValueError(
+                f"No backup folder configured for "
+                f"{'movies' if title['kind'] == 'movie' else 'series'} "
+                "— set it in Settings first")
+        # physical drive = the shortest configured backup root containing
+        # the destination (the legacy drive root, or the per-kind folder
+        # itself when that IS the drive root)
+        drive_root = dest_base
+        for r in fileops.all_backup_roots():
+            if (dest_base + os.sep).startswith(r.rstrip(os.sep) + os.sep) \
+                    and len(r) < len(drive_root):
+                drive_root = r
+    else:
+        dest_base = db.settings_get("internal_root")
+        if not dest_base:
+            raise ValueError("No internal folder configured — set it in Settings first")
+        drive_root = os.path.abspath(dest_base)
     if not os.path.isdir(drive_root):
         raise ValueError(
             f"{target} folder not accessible: {drive_root} — is the drive plugged in?"
         )
-    # backup-drive layout: titles land in Movies/ or Series/ per their kind
-    # (internal storage keeps its existing layout — no subfolder hop)
-    dest_base = drive_root
-    if target == "external":
-        sub = config.EXTERNAL_SUBDIRS.get(title["kind"])
-        if sub:
-            dest_base = os.path.join(drive_root, sub)
+    dest_base = os.path.abspath(dest_base)
 
     def _rel(src: str, base: str) -> str:
-        """Path relative to `base`. On the way back from the backup drive,
-        the Movies//Series/ kind hop is stripped so titles restore their
-        original internal-storage layout."""
+        """Path relative to `base`. On the way back from ANY backup root,
+        the destination folder itself is stripped so titles restore their
+        original internal-storage layout (covers the legacy Movies//Series/
+        kind hop and per-kind backup/liked roots alike)."""
         if target == "internal":
-            bk_root = fileops.backup_root()
-            for sub in config.EXTERNAL_SUBDIRS.values():
-                hop = os.path.join(bk_root, sub) + os.sep
-                if bk_root and src.startswith(hop):
-                    return os.path.relpath(src, hop)
+            for r in fileops.all_backup_roots():
+                if (os.path.abspath(src) + os.sep).startswith(
+                        r.rstrip(os.sep) + os.sep):
+                    return os.path.relpath(src, r)
         return os.path.relpath(src, base)
 
     all_files = q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,))
     if not all_files:
         raise ValueError("No accessible files to move for this title")
     files = all_files
+    # liked-drive copies never travel: the secondary backup of a favorite
+    # stays on its liked drive no matter where the working copy moves
+    lk = fileops.liked_root(title["kind"])
+    if lk:
+        lk = os.path.abspath(lk).rstrip(os.sep) + os.sep
+        files = [f for f in files
+                 if not (os.path.abspath(f["path"]) + os.sep).startswith(lk)]
+        if not files:
+            raise ValueError("Only liked-drive copies exist — nothing to move")
     if seasons:
         # partial move: keep only episodes of the chosen seasons (a file
         # without a parsed season counts as season 1, like the drawer UI)
@@ -289,20 +312,24 @@ def move_title(job_id: str, title_id: int, target: str,
                 (_now(), title_id))
 
     # the LANDING FOLDER becomes a managed root so scans cover moved files
-    # and locations stay accurate (idempotent). NEVER register the whole
-    # drive: backup drives also hold camera clips / photos / misc backups,
-    # and sweeping the entire device floods the catalog with junk titles
-    # (and LLM-cleanup calls for every one). The kind subfolder (Movies/ or
-    # Series/) matches the per-folder roots the UI already uses.
-    if moved and dest_base.rstrip(os.sep) != drive_root.rstrip(os.sep):
+    # and locations stay accurate (idempotent). dest_base is always a KIND
+    # folder (Movies//Series/ on the legacy drive, or the exact per-kind
+    # backup folder the user picked) — never a whole device, so sweeping
+    # camera clips / photos / misc backups into the catalog cannot happen.
+    if moved:
         with tx() as c:
             c.execute("INSERT OR IGNORE INTO roots(path) VALUES(?)", (dest_base,))
 
     # consolidation: files whose destination already existed were SKIPPED by
     # the move loop (never deleted) — a duplicated title would otherwise end
-    # up with two copies on the target and the old one on the source drive
+    # up with two copies on the target and the old one on the source drive.
+    # Liked-drive copies are always protected (keep_roots): consolidating
+    # must never destroy a favorite's secondary backup place.
+    keep_roots = [fileops.liked_root(title["kind"])] \
+        if fileops.liked_root(title["kind"]) else []
     purged = _purge_leftovers(job_id, title_id, target,
-                              seasons=seasons) if purge_others else 0
+                              seasons=seasons,
+                              keep_roots=keep_roots) if purge_others else 0
 
     tail = f", {purged} leftover(s) removed" if purged else ""
     log(job_id, f"Move complete: {moved} moved, {skipped} skipped{tail}")
@@ -310,7 +337,8 @@ def move_title(job_id: str, title_id: int, target: str,
 
 
 def _purge_leftovers(job_id: str, title_id: int, target: str,
-                     seasons: Optional[List[int]] = None) -> int:
+                     seasons: Optional[List[int]] = None,
+                     keep_roots: Optional[List[str]] = None) -> int:
     """Delete copies of the title that STILL sit outside the target side.
 
     Only physically present files on known, connected roots are touched —
@@ -318,24 +346,38 @@ def _purge_leftovers(job_id: str, title_id: int, target: str,
     folder-aware (duplicates._delete_title_files) so Subs/, artwork and
     .nfo sidecars of each doomed release folder go with it; the stored
     title size is recomputed afterwards. With `seasons`, only copies of
-    the selected seasons are purged.
+    the selected seasons are purged. Copies under any root in
+    `keep_roots` (the liked drives) are NEVER purged: consolidating a
+    favorite must not destroy its secondary backup.
     """
     from . import duplicates
     from .jobs import log
 
-    ext = fileops.backup_root()
-    if not ext:
-        return 0  # no external drive configured -> no 'other side' exists
-    ext = os.path.abspath(ext).rstrip(os.sep) + os.sep
+    backup_roots = [os.path.abspath(r) for r in
+                    (fileops.all_backup_roots() if target == "external" else
+                     [fileops.regular_root(k) for k in ("movie", "series")])
+                    if r]
+    if target == "external" and not backup_roots:
+        return 0  # no backup destination configured -> no 'other side'
+    keep = [os.path.abspath(r).rstrip(os.sep) + os.sep
+            for r in (keep_roots or [])]
 
     def _side(p: str) -> str:
-        return "external" if os.path.abspath(p).startswith(ext) else "internal"
+        ap = os.path.abspath(p) + os.sep
+        if target == "external":
+            return "external" if any(ap.startswith(r.rstrip(os.sep) + os.sep)
+                                     for r in backup_roots) else "internal"
+        return "internal" if not any(ap.startswith(r.rstrip(os.sep) + os.sep)
+                                     for r in backup_roots) else "external"
 
     doomed = []
     for f in q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,)):
         if seasons is not None and \
                 (f["season"] if f["season"] is not None else 1) not in set(seasons):
             continue  # partial move: other seasons' copies are not ours to purge
+        ap = os.path.abspath(f["path"]) + os.sep
+        if any(ap.startswith(r) for r in keep):
+            continue  # a liked drive copy is protected — never consolidated away
         if _side(f["path"]) == target:
             continue  # this copy already lives where the user asked
         base = src_base(f["path"])
