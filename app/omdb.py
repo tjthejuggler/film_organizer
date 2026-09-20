@@ -38,12 +38,17 @@ def fetch(imdb_id: str):
                 rating_rt = int(row["Value"].rstrip("%"))
             except (ValueError, KeyError):
                 pass
+    metacritic = None
+    try:
+        metacritic = int(d.get("Metascore"))
+    except (TypeError, ValueError):
+        pass
     return {
         "rating_imdb": float(d["imdbRating"]) if d.get("imdbRating") not in (None, "N/A") else None,
         "votes_imdb": votes,
         "rated": d.get("Rated") if d.get("Rated") != "N/A" else None,
         "rating_rt": rating_rt,
-        "metacritic": d.get("Metascore") if d.get("Metascore") not in (None, "N/A") else None,
+        "rating_mc": metacritic,  # 0-100 Metascore ('metacritic' str kept for callers)
         "country": d.get("Country") if d.get("Country") != "N/A" else None,
         "seasons_omdb": seasons,
         "poster_omdb": d.get("Poster") if d.get("Poster") != "N/A" else None,

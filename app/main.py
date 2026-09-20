@@ -257,6 +257,7 @@ class TitlePatch(BaseModel):
     votes_imdb: Optional[int] = None
     rating_tmdb: Optional[float] = None
     rating_rt: Optional[int] = None
+    rating_mc: Optional[int] = None
     stars: Optional[list] = None
     genres: Optional[list] = None
     clear: Optional[list] = None  # field names to NULL out (e.g. wrong rating)
@@ -329,6 +330,18 @@ class RecDecideIn(BaseModel):
 
 
 # ---- helpers --------------------------------------------------------------
+def _avg_rating(d: dict):
+    """Mean of the available ratings, all normalized to a 0-10 scale
+    (IMDb 0-10, TMDB 0-10, RT %/10, Metacritic /10). Zero ratings count as
+    'no data' so the average only spans providers that actually scored it."""
+    vals = [v for v in (
+        d.get("rating_imdb"), d.get("rating_tmdb"),
+        d["rating_rt"] / 10 if d.get("rating_rt") is not None else None,
+        d["rating_mc"] / 10 if d.get("rating_mc") is not None else None,
+    ) if v is not None and v > 0]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
 def _title_payload(row) -> dict:
     d = dict(row)
     for k in ("genres", "stars", "manual_edits"):
@@ -344,6 +357,8 @@ def _title_payload(row) -> dict:
     d["watch_next"] = d.get("watch_next")  # 'movie' | 'series' | None
     d["is_miniseries"] = bool(d.get("is_miniseries"))
     d["hidden"] = bool(d.get("hidden"))
+    d["rating_mc"] = d.get("rating_mc")
+    d["avg_rating"] = _avg_rating(d)
     return d
 
 
@@ -387,6 +402,21 @@ def favicon():
     return FileResponse(path, media_type="image/svg+xml",
                         headers={"Cache-Control": "no-store"}) \
         if os.path.exists(path) else JSONResponse({}, status_code=204)
+
+
+# SQL twin of _avg_rating(): the same provider-mean on a 0-10 scale (RT and
+# MC are 0-100 and MUST be divided by 10 here — mixing raw scales once made
+# an RT-only 83% outrank a 9.1 IMDb), built for ORDER BY so sorted and
+# displayed averages agree exactly. All-four-missing -> 0/0 -> NULL.
+_AVG_SCORE_SQL = """(
+    (COALESCE(CASE WHEN t.rating_imdb > 0 THEN t.rating_imdb END, 0)
+   + COALESCE(CASE WHEN t.rating_tmdb > 0 THEN t.rating_tmdb END, 0)
+   + COALESCE(CASE WHEN t.rating_rt   > 0 THEN t.rating_rt / 10.0 END, 0)
+   + COALESCE(CASE WHEN t.rating_mc   > 0 THEN t.rating_mc / 10.0 END, 0))
+   /(CASE WHEN t.rating_imdb > 0 THEN 1 ELSE 0 END
+    + CASE WHEN t.rating_tmdb > 0 THEN 1 ELSE 0 END
+    + CASE WHEN t.rating_rt   > 0 THEN 1 ELSE 0 END
+    + CASE WHEN t.rating_mc   > 0 THEN 1 ELSE 0 END))"""
 
 
 def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
@@ -455,6 +485,10 @@ def list_titles(
     person: str = None, wanted: str = None, seen: str = None,
     hidden: str = None,
     sort: str = "title", direction: str = "asc",
+    # tie-breaker the frontend derives from the PREVIOUS sort the user had
+    # active: when the primary key has ties (year, rating...), those groups
+    # stay ordered by the earlier sort instead of an arbitrary order
+    secondary: str = None, secondary_dir: str = None,
     limit: int = 10000, offset: int = 0,
 ):
     where, params = _filter_clause(q, kind, watched, match, genre,
@@ -465,6 +499,8 @@ def list_titles(
         "title": "t.title COLLATE NOCASE", "year": "t.year",
         "rating": "COALESCE(t.rating_imdb, t.rating_tmdb)",
         "rt": "t.rating_rt",
+        "mc": "t.rating_mc",
+        "avg": f"({_AVG_SCORE_SQL})",
         "runtime": "t.runtime",
         "cataloged": "t.cataloged_at",
         "created": "COALESCE(t.created_at, t.cataloged_at)",
@@ -474,12 +510,17 @@ def list_titles(
     }
     order = ORDER.get(sort, ORDER["title"])
     direction = "DESC" if direction.lower() == "desc" else "ASC"
+    # unknown key / same-as-primary / absent -> no secondary clause at all
+    sec_order = ORDER.get(secondary or "")
+    sec_dir = "DESC" if (secondary_dir or "").lower() == "desc" else "ASC"
+    sec_sql = (f", {sec_order} {sec_dir}"
+               if sec_order and (secondary or "") != sort else "")
 
     wsql = (" WHERE " + " AND ".join(where)) if where else ""
     rows = db.q(
         f"""SELECT t.* FROM titles t{wsql}
             ORDER BY (t.watch_next IS NOT NULL) DESC,
-                     {order} {direction}, t.title COLLATE NOCASE
+                     {order} {direction}{sec_sql}, t.title COLLATE NOCASE
             LIMIT ? OFFSET ?""",
         params + [limit, offset],
     )
@@ -572,7 +613,7 @@ DETAIL_FIELDS = {
     "overview": str, "director": str, "creator": str, "network": str,
     "status": str, "cert": str, "runtime": int, "seasons": int,
     "episodes": int, "rating_imdb": float, "votes_imdb": int,
-    "rating_tmdb": float, "rating_rt": int,
+    "rating_tmdb": float, "rating_rt": int, "rating_mc": int,
 }
 LIST_FIELDS = {"stars", "genres"}
 

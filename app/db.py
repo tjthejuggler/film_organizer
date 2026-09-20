@@ -3,6 +3,7 @@ import os
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 from . import config
 
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS titles(
     rating_imdb    REAL,
     votes_imdb     INTEGER,
     rating_tmdb    REAL,
+    rating_mc      INTEGER,  -- Metacritic Metascore 0-100 (via OMDb)
     poster         TEXT,
     backdrop       TEXT,
     data_source    TEXT,
@@ -71,7 +73,7 @@ CREATE TABLE IF NOT EXISTS titles(
     watched_folder INTEGER DEFAULT 0,
     watched_manual INTEGER,
     watched_at     TEXT,
-    history        INTEGER DEFAULT 0,
+    history        INTEGER DEFAULT 0,  -- legacy seen-log flag; 'seen' == 'watched' now, kept so old rows stay fileless-survivors
     hidden         INTEGER DEFAULT 0,  -- tucked away: excluded from the default list, never deleted
     last_seen      TEXT,
     size_bytes     INTEGER DEFAULT 0,
@@ -235,6 +237,25 @@ def ensure():
         # of; the scanner must never prune them (see scan_roots cleanup)
         if "history" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN history INTEGER DEFAULT 0")
+        # Metacritic Metascore 0-100 (OMDb 'Metascore'; TMDB has none)
+        if "rating_mc" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN rating_mc INTEGER")
+        # 'seen' == 'watched' merge (one-shot): seen-log rows become watched
+        # so one flag drives badges/filters everywhere. history stays as the
+        # "no file owned" marker (scanner survival), but no longer implies
+        # an unwatched state. Guarded by a settings marker — without it a
+        # row the user later un-watches would be re-flipped on every boot.
+        if not con.execute(
+                "SELECT 1 FROM settings WHERE key='seen_watched_merged'"
+        ).fetchone():
+            con.execute(
+                "UPDATE titles SET watched_manual=1, "
+                "watched_at=COALESCE(watched_at, ?) WHERE history=1 "
+                "AND (watched_manual IS NULL OR watched_manual=0)",
+                (datetime.now(timezone.utc).isoformat(timespec="seconds"),))
+            con.execute(
+                "INSERT OR REPLACE INTO settings(key,value) "
+                "VALUES('seen_watched_merged','1')")
         # miniseries: still a series (kind='series') but shown/tagged as
         # miniseries and filterable via the genre dropdown
         if "is_miniseries" not in cols:

@@ -37,6 +37,22 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-20** — **Seen ≡ Watched merge; chained sorting; Metacritic + average score; RT color tiers**:
+  * The separate "seen" tag is gone — everything previously in the seen log is now simply
+    **watched** (one-time data migration; owning a file or not no longer matters). The seen-log
+    filter dropdown was removed; the 👁/⧉ button in the header now manages the **watched log**
+    (titles watched without owning the file, still protected from scan cleanup via `history`).
+  * **Chained sorting**: clicking a new sort column keeps the *previous* sort as a silent
+    tie-breaker (`secondary`/`secondary_dir` params on `/api/titles`) — e.g. sort by rating,
+    then by year, and same-year rows stay ordered by rating.
+  * **Metacritic Metascore** (`rating_mc`) now fills from OMDb alongside RT (both Enrich and
+    the ratings backfill target it; the backfill also re-tries rows whose `backfill_miss`
+    cap was reached). The drawer edit form gained an MC field.
+  * **Average score**: new sortable ⚖ column shows the mean of IMDb / TMDB / RT / Metacritic,
+    normalized to 0-10, averaged only over providers that actually have a value (SQL twin in
+    the backend so sorting and display always agree).
+  * **RT/MC tier colors** replaced the red/blue split: ≥75 blue, ≥60 green, ≥40 yellow,
+    <40 red (RT itself has no official color scale).
 - **2026-09-18** — **"not_found" epidemic fixed at the root**: 90+ real movies/shows
   were sitting in the library labelled "likely not a catalogued movie/show". Five
   independent root causes, all fixed:

@@ -4,18 +4,19 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
 const state = {
   q: "", kind: "", watched: "", genre: "", root: "", match: "!not_found", missing: false,
-  wanted: "", seen: "", hidden: "",
+  wanted: "", hidden: "",
   sort: "title", dir: "asc",
+  sec: "", secDir: "asc", // previous sort — the silent tie-breaker
   titles: [], genres: [],
 };
 
 /* ---------- UI state persistence (survives refresh & restart) ---------- */
 const STATE_KEY = "film_organizer_ui_state";
 function saveState() {
-  const { q, kind, watched, genre, root, match, missing, wanted, seen, hidden, sort, dir } = state;
+  const { q, kind, watched, genre, root, match, missing, wanted, hidden, sort, dir, sec, secDir } = state;
   try {
     localStorage.setItem(STATE_KEY,
-      JSON.stringify({ q, kind, watched, genre, root, match, missing, wanted, seen, hidden, sort, dir }));
+      JSON.stringify({ q, kind, watched, genre, root, match, missing, wanted, hidden, sort, dir, sec, secDir }));
   } catch (e) { /* private mode etc. — persistence is best-effort */ }
 }
 function restoreState() {
@@ -40,6 +41,11 @@ function fmtSize(b) {
 function fmtDate(s) {
   if (!s) return "—";
   return s.slice(0, 10);
+}
+/* Rotten Tomatoes / Metacritic tier bands: top tier blue, then green,
+   yellow, red for the very lowest (RT itself has no such color scale). */
+function rtTier(s) {
+  return s >= 75 ? "t-high" : s >= 60 ? "t-good" : s >= 40 ? "t-mid" : "t-low";
 }
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
@@ -93,13 +99,16 @@ async function load() {
   if (state.match) p.set("match", state.match);
   if (state.missing) p.set("missing_on", "1");
   if (state.wanted) p.set("wanted", state.wanted);
-  if (state.seen) p.set("seen", state.seen);
   if (state.hidden) p.set("hidden", state.hidden);
   p.set("sort", state.sort); p.set("direction", state.dir);
+  if (state.sec && state.sec !== state.sort) {
+    p.set("secondary", state.sec); p.set("secondary_dir", state.secDir);
+  }
   // stats use the SAME filter params (minus sort) so the top bar reflects
   // everything that made it through the current filter
   const ps = new URLSearchParams(p);
   ps.delete("sort"); ps.delete("direction");
+  ps.delete("secondary"); ps.delete("secondary_dir");
   const [data, st] = await Promise.all([
     api(`/api/titles?${p}`), api(`/api/stats?${ps}`),
   ]);
@@ -182,7 +191,6 @@ function renderRows() {
     const genreTags = (t.genres || []).slice(0, 3).map(g =>
       `<span class="badge genre">${esc(g)}</span>`).join("");
     const wantedBadge = t.wanted ? '<span class="badge wanted" title="On the wishlist — submitted via API or toggled here">★ wanted</span>' : "";
-    const seenBadge = t.history ? '<span class="badge seen" title="Seen log — watched but no file owned">👁 seen</span>' : "";
     const hiddenBadge = t.hidden ? '<span class="badge hiddenbadge" title="Hidden — out of the default list, not deleted">🙈 hidden</span>' : "";
     // season calendar chips: upcoming season announced/vague, or finished
     const calUpcoming = t.season_upcoming
@@ -208,7 +216,7 @@ function renderRows() {
           <div class="tname">${esc(t.title)}<button class="copybtn" data-copy="${esc(t.title)}"
             title="Copy title to clipboard">⧉</button></div>
           <div style="margin-top:3px">
-            <span class="badge ${t.kind}${t.is_miniseries ? " mini" : ""}" title="${kindTitle}">${kindLabel}</span>${nextBadge}${wantedBadge}${seenBadge}${hiddenBadge}${calUpcoming}${calFinished}${matchBadge}
+            <span class="badge ${t.kind}${t.is_miniseries ? " mini" : ""}" title="${kindTitle}">${kindLabel}</span>${nextBadge}${wantedBadge}${hiddenBadge}${calUpcoming}${calFinished}${matchBadge}
             ${metas.map(m => `<span class="badge">${esc(m)}</span>`).join("")}
             ${genreTags}
           </div>
@@ -218,7 +226,8 @@ function renderRows() {
       <td class="c">${fmtRuntime(t)}</td>
       <td class="c">${t.cert ? `<span class="cert">${esc(t.cert)}</span>` : "—"}</td>
       <td class="c">${rating ? `<span class="rating">★ ${rating.toFixed(1)}</span>` : "—"}</td>
-      <td class="c">${t.rating_rt != null ? `<span class="rt ${t.rating_rt >= 60 ? "fresh" : "rotten"}">${t.rating_rt}%</span>` : "—"}</td>
+      <td class="c">${t.rating_rt != null ? `<span class="rt ${rtTier(t.rating_rt)}">${t.rating_rt}%</span>` : "—"}</td>
+      <td class="c">${t.avg_rating != null ? `<span class="avgrating" title="Average of IMDb / TMDB / RT / Metacritic (those that have a score)">${t.avg_rating.toFixed(1)}</span>` : "—"}</td>
       <td class="meta-col">${starChips}${starChips && whoPerson ? "<br>" : ""}${whoPerson}</td>
       <td class="where">${(t.locations || []).map(l => {
         const off = (t.offline_locations || []).includes(l);
@@ -243,10 +252,17 @@ function renderRows() {
 }
 
 /* ---------- sorting / filtering ---------- */
+/* Clicking a new column keeps the PREVIOUS sort as a silent tie-breaker:
+   ties on the new key (year, rating...) stay ordered by whatever the user
+   was looking at before. No UI indication — it just behaves that way. */
 $$("th.sortable").forEach(th => th.addEventListener("click", () => {
   const k = th.dataset.sort;
-  if (state.sort === k) state.dir = state.dir === "asc" ? "desc" : "asc";
-  else { state.sort = k; state.dir = "asc"; }
+  if (state.sort === k) {
+    state.dir = state.dir === "asc" ? "desc" : "asc";
+  } else {
+    state.sec = state.sort; state.secDir = state.dir;
+    state.sort = k; state.dir = "asc";
+  }
   applySortIndicators();
   load();
 }));
@@ -268,7 +284,6 @@ $("#genreSel").addEventListener("change", e => { state.genre = e.target.value; l
 $("#rootSel").addEventListener("change", e => { state.root = e.target.value; load(); });
 $("#wantedSel").addEventListener("change", e => { state.wanted = e.target.value; load(); });
 $("#hiddenSel").addEventListener("change", e => { state.hidden = e.target.value; load(); });
-$("#seenSel").addEventListener("change", e => { state.seen = e.target.value; load(); });
 $("#matchSel").addEventListener("change", e => { state.match = e.target.value; load(); });
 $("#onlyMissing").addEventListener("change", e => { state.missing = e.target.checked; load(); });
 
@@ -509,6 +524,7 @@ const EDIT_FIELDS = [
   ["rating_imdb", "IMDb rating (0-10)", "number", "0.1"],
   ["rating_tmdb", "TMDB rating (0-10)", "number", "0.1"],
   ["rating_rt", "Rotten Tomatoes %", "number", "1"],
+  ["rating_mc", "Metacritic Metascore (0-100)", "number", "1"],
   ["votes_imdb", "IMDb votes", "number", "1"],
   ["cert", "Content rating (e.g. PG-13)", "text"],
   ["seasons", "Seasons", "number"],
@@ -542,7 +558,9 @@ async function openDrawer(id) {
     </div>
     ${(t.genres || []).map(g => `<span class="badge genre">${esc(g)}</span>`).join(" ")}
     ${t.cert ? `<span class="cert" title="Content rating">${esc(t.cert)}</span>` : ""}
-    ${t.rating_rt != null ? `<span class="rt ${t.rating_rt >= 60 ? "fresh" : "rotten"}" title="Rotten Tomatoes">🍅 ${t.rating_rt}%</span>` : ""}
+    ${t.rating_rt != null ? `<span class="rt ${rtTier(t.rating_rt)}" title="Rotten Tomatoes">🍅 ${t.rating_rt}%</span>` : ""}
+    ${t.rating_mc != null ? `<span class="rt ${rtTier(t.rating_mc)}" title="Metacritic">🟩 MC ${t.rating_mc}</span>` : ""}
+    ${t.avg_rating != null ? `<span class="avgrating" title="Average of IMDb / TMDB / RT / Metacritic (those that have a score)">⚖ avg ${t.avg_rating.toFixed(1)}</span>` : ""}
     ${t.wanted && t.wanted_note ? `<p class="hint">Wanted — ${esc(t.wanted_note)}${t.wanted_by ? ` (via ${esc(t.wanted_by)})` : ""}</p>` : ""}
     <div class="descwrap">
       <button class="btn mini" id="dDescBtn">Show description</button>
@@ -1206,7 +1224,7 @@ async function bulkRun() {
   openDupes(); load();
 }
 
-/* ---------- seen log (watched titles we no longer own) ---------- */
+/* ---------- watched log (titles watched without owning a file) ---------- */
 async function openHistory() {
   $("#histModal").classList.remove("hidden");
   await renderHistoryList();
@@ -1280,12 +1298,12 @@ function renderHistCandidates(r, formBody) {
           <div class="candtxt">
             <b>${esc(t.title)}</b>${t.year ? ` <span class="dim">(${t.year})</span>` : ""}
             <span class="badge ${t.kind}">${t.kind}</span>
-            ${t.history ? '<span class="badge seen">👁 seen</span>' : ""}
+            ${t.history ? '<span class="badge seen">✓ watched</span>' : ""}
             <div class="dim">${(t.genres || []).slice(0, 3).join(" · ")
               || esc(t.overview || "").slice(0, 120)}</div>
           </div>
           <button class="btn mini" data-picklocal="${t.id}" data-title="${esc(t.title)}"
-            data-kind="${esc(t.kind)}" data-year="${t.year || ""}">${t.history ? "Already logged" : "Mark seen"}</button>
+            data-kind="${esc(t.kind)}" data-year="${t.year || ""}">${t.history ? "Already logged" : "Mark watched"}</button>
         </div>`);
     }
   }
@@ -1354,7 +1372,7 @@ $("#hResults").addEventListener("click", e => {
 $("#histList").addEventListener("click", async e => {
   const btn = e.target.closest("[data-histdel]");
   if (!btn) return;
-  if (!confirm(`Remove "${btn.dataset.name}" from the seen log?`)) return;
+  if (!confirm(`Remove "${btn.dataset.name}" from the watched log?`)) return;
   btn.disabled = true;
   try {
     await api(`/api/history/${btn.dataset.histdel}`, { method: "DELETE" });
@@ -1818,7 +1836,6 @@ $("#search").value = state.q;
 $("#matchSel").value = state.match;
 $("#wantedSel").value = state.wanted;
 $("#hiddenSel").value = state.hidden || "";
-$("#seenSel").value = state.seen;
 $("#onlyMissing").checked = !!state.missing;
 $$("#kindChips .chip").forEach(c => c.classList.toggle("on", (c.dataset.kind || "") === state.kind));
 $$("#watchChips .chip").forEach(c => c.classList.toggle("on", (c.dataset.w || "") === state.watched));

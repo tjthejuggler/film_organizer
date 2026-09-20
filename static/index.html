@@ -35,7 +35,7 @@
         📅<span id="calCount" class="bellpill hidden"></span></button>
       <div id="calPanel" class="notifpanel calpanel hidden"></div>
     </span>
-    <button id="btnHistory" class="btn ghost iconbtn" title="Record a movie/series you've seen without owning the file">
+    <button id="btnHistory" class="btn ghost iconbtn" title="Record a movie/series you watched without owning the file">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
     <button id="btnSettings" class="btn ghost iconbtn" title="Settings — API keys, library roots, storage folders">⚙</button>
   </div>
@@ -65,10 +65,6 @@
     <option value="only">Hidden only</option>
     <option value="all">Include hidden</option>
   </select>
-  <select id="seenSel" title="Show only the seen log — titles recorded as watched without a file">
-    <option value="">Seen log: all</option>
-    <option value="history">Seen log only</option>
-  </select>
   <select id="matchSel" title="not-found titles are hidden by default">
     <option value="!not_found" selected>All (hide not-found)</option>
     <option value="">Really all</option>
@@ -92,6 +88,7 @@
       <th class="c">Cert.</th>
       <th data-sort="rating" class="sortable c" title="IMDb rating"><svg class="imdb" viewBox="0 0 100 32" width="34" height="14" aria-label="IMDb"><rect width="100" height="32" rx="6" fill="#F5C518"/><text x="50" y="24" text-anchor="middle" font-family="Arial, sans-serif" font-weight="bold" font-size="24" fill="#000">IMDb</text></svg></th>
       <th data-sort="rt" class="sortable c" title="Rotten Tomatoes"><span class="rt-head">🍅</span></th>
+      <th data-sort="avg" class="sortable c" title="Average score — IMDb / TMDB / RT / Metacritic, averaged over whichever have a value">⚖</th>
       <th class="meta-col">Cast / Creators</th>
       <th class="meta-col">Where</th>
       <th data-sort="size" class="sortable r">Size</th>
@@ -256,12 +253,12 @@
   </div>
 </div>
 
-<!-- seen-history modal -->
+<!-- watched-history modal -->
 <div id="histModal" class="modal hidden">
   <div class="sheet">
-    <div class="shead"><h2>Seen log</h2><button class="btn ghost" id="hClose">✕</button></div>
-    <p class="hint">Record movies/series you have <b>watched but no longer own</b> — just so the
-      catalog knows you've seen them. These entries survive scans even though no file exists.
+    <div class="shead"><h2>Watched log</h2><button class="btn ghost" id="hClose">✕</button></div>
+    <p class="hint">Record movies/series you have <b>watched without owning the file</b> — these entries
+      survive scans even though no file exists and count as watched like any other title.
       If the file ever reappears on disk, the entry turns into a normal library row (still marked watched).</p>
     <div class="hform">
       <input id="hTitle" placeholder="Title (e.g. The Matrix)">

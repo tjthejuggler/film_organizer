@@ -23,8 +23,8 @@ def _apply(row_id: int, data: dict, source: str, status="matched", manual_edits=
         "network": "network", "seasons": "seasons", "episodes": "episodes",
         "runtime": "runtime", "status": "status",
         "rating_imdb": "rating_imdb", "votes_imdb": "votes_imdb",
-        "rating_tmdb": "rating_tmdb", "poster": "poster",
-        "backdrop": "backdrop",
+        "rating_tmdb": "rating_tmdb", "rating_mc": "rating_mc",
+        "poster": "poster", "backdrop": "backdrop",
     }
     locked = set(manual_edits or [])
     # miniseries flag comes from TMDB's TV "type" field; never locked via
@@ -384,6 +384,8 @@ def enrich_one(row, job_log=None, force=False, respect_cap=True):
         detail["votes_imdb"] = od["votes_imdb"]
         if od.get("rating_rt") is not None:
             detail["rating_rt"] = od["rating_rt"]
+        if od.get("rating_mc") is not None:
+            detail["rating_mc"] = od["rating_mc"]
         if od.get("rated") and od["rated"] not in ("N/A", None):
             detail["cert"] = detail.get("cert") or od["rated"]
         if od.get("seasons_omdb") and kind == "series" and not detail.get("seasons"):
@@ -484,11 +486,11 @@ def run_backfill(job_id: str):
     so rows self-heal if providers later add the data."""
     from .jobs import log, update
 
-    rows = q("""SELECT id, title, tmdb_id, imdb_id, kind, cert, rating_rt, is_miniseries, manual_edits, backfill_miss FROM titles
+    rows = q("""SELECT id, title, tmdb_id, imdb_id, kind, cert, rating_rt, rating_mc, is_miniseries, manual_edits, backfill_miss FROM titles
                 WHERE match_status='matched' AND tmdb_id IS NOT NULL
                   AND (cert IS NULL
                        OR (kind='series' AND is_miniseries=0)
-                       OR (imdb_id IS NOT NULL AND rating_rt IS NULL))
+                       OR (imdb_id IS NOT NULL AND (rating_rt IS NULL OR rating_mc IS NULL)))
                   AND (backfill_miss IS NULL OR backfill_miss < ?)""",
              (MAX_BACKFILL_MISS,))
     total = len(rows)
@@ -516,12 +518,18 @@ def run_backfill(job_id: str):
                 if tv_type and "miniseries" in tv_type.lower():
                     sets.append("is_miniseries=1")
                     goals_met.append("mini")
-            if row["imdb_id"] and omdb.enabled() and row["rating_rt"] is None:
+            if row["imdb_id"] and omdb.enabled() and \
+                    (row["rating_rt"] is None or row["rating_mc"] is None):
                 od = omdb.fetch(row["imdb_id"])
                 if od:
-                    if od.get("rating_rt") is not None and "rating_rt" not in locked:
+                    if od.get("rating_rt") is not None and "rating_rt" not in locked \
+                            and row["rating_rt"] is None:
                         sets.append("rating_rt=?"); vals.append(od["rating_rt"])
                         goals_met.append("rt")
+                    if od.get("rating_mc") is not None and "rating_mc" not in locked \
+                            and row["rating_mc"] is None:
+                        sets.append("rating_mc=?"); vals.append(od["rating_mc"])
+                        goals_met.append("mc")
                     if od.get("rating_imdb") is not None and "rating_imdb" not in locked:
                         sets.append("rating_imdb=?"); vals.append(od["rating_imdb"])
                     if od.get("votes_imdb") is not None and "votes_imdb" not in locked:
