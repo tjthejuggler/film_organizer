@@ -46,7 +46,8 @@ def src_base(path: str):
 
 def move_title(job_id: str, title_id: int, target: str,
                purge_others: bool = False,
-               seasons: Optional[List[int]] = None):
+               seasons: Optional[List[int]] = None,
+               dest_root: Optional[str] = None):
     """Move a title to the 'internal' or 'external' side.
 
     purge_others=True upgrades the move to a CONSOLIDATION (the drawer's
@@ -58,13 +59,36 @@ def move_title(job_id: str, title_id: int, target: str,
     seasons (series): move only these seasons; None moves everything.
     A partial-season move is always FILE-BY-FILE — a release folder that
     also holds seasons left behind is never relocated whole.
+
+    dest_root: explicit destination folder (any configured backup/liked/
+    internal root, from the drawer's 'Move to' list). Overrides the plain
+    internal/external target derivation; its physical drive then decides
+    the purge side.
     """
     from .jobs import log, update
 
     title = q1("SELECT * FROM titles WHERE id=?", (title_id,))
     if not title:
         raise ValueError("title not found")
-    if target == "external":
+    if dest_root:
+        dest_base = os.path.abspath(dest_root)
+        if not os.path.isdir(dest_base):
+            raise ValueError(
+                f"destination folder not accessible: {dest_base} — "
+                "is the drive plugged in?")
+        drive_root = dest_base
+        # physical drive = shortest configured backup root containing the
+        # destination (or the destination itself when it IS a drive root)
+        for r in fileops.all_backup_roots():
+            if (dest_base + os.sep).startswith(r.rstrip(os.sep) + os.sep) \
+                    and len(r) < len(drive_root):
+                drive_root = r
+        # side for the purge step: a destination under any backup root is
+        # 'external'; anything else (internal storage) is 'internal'
+        target = "external" if drive_root != dest_base or any(
+            (dest_base + os.sep).startswith(r.rstrip(os.sep) + os.sep)
+            for r in fileops.all_backup_roots()) else "internal"
+    elif target == "external":
         # the title's kind decides the destination: every movie backs up to
         # backup_movies_root, every series to backup_series_root (the
         # legacy external_root drive still works when the per-kind keys

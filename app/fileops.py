@@ -62,6 +62,31 @@ def liked_root(kind: str) -> str:
     return os.path.abspath(own) if own else ""
 
 
+def move_destinations() -> list:
+    """Every configured move destination, deduplicated, for the drawer's
+    'Move to' buttons: internal storage plus the per-kind regular backups
+    and liked drives (the legacy external_root drive shows up through the
+    Movies//Series/ subfolder layout regular_root resolves it to)."""
+    out: list = []
+    seen: set = set()
+
+    def add(root, role, kind=None):
+        if not root:
+            return
+        root = os.path.abspath(root)
+        if root in seen:
+            return
+        seen.add(root)
+        out.append({"root": root, "role": role, "kind": kind,
+                    "mounted": os.path.isdir(root)})
+
+    add(db.settings_get("internal_root"), "internal")
+    for kind in ("movie", "series"):
+        add(regular_root(kind), "backup", kind)
+        add(liked_root(kind), "liked", kind)
+    return out
+
+
 def all_backup_roots() -> list:
     """Every configured backup destination (regular + liked + legacy drive),
     longest first — for 'is this path on a backup drive' prefix checks."""

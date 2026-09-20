@@ -85,7 +85,8 @@ def list_pending() -> list:
     a different, unplugged drive."""
     rows = q(
         """SELECT d.id, d.kind, d.title_id, d.drive, d.description, d.created_at,
-                  d.status, d.last_error, d.payload, t.title AS title_name
+                  d.status, d.last_error, d.payload, d.attempts,
+                  t.title AS title_name
            FROM drive_queue d LEFT JOIN titles t ON t.id = d.title_id
            WHERE d.status IN ('pending','error') ORDER BY d.drive, d.id""")
     groups: dict = {}
@@ -99,11 +100,20 @@ def list_pending() -> list:
             payload = {}
         drives = payload.get("drives") or [r["drive"]]
         missing = [d for d in drives if not os.path.isdir(d)]
+        # queued moves additionally need every drive their FILES sit on
+        # (plus the liked-copy drive when backing up) — mirror the gate the
+        # runner applies so the UI shows exactly what to plug in instead of
+        # claiming "will run now" over a move that would instantly fail
+        if r["kind"] == "move":
+            missing += [b for b in _move_blockers(dict(r), payload)
+                        if b not in missing]
+        attempts = r["attempts"] or 0
         g["items"].append({
             "id": r["id"], "kind": r["kind"], "title_id": r["title_id"],
             "title": r["title_name"], "description": r["description"],
             "created_at": r["created_at"], "status": r["status"],
-            "last_error": r["last_error"],
+            "last_error": r["last_error"], "attempts": attempts,
+            "exhausted": r["status"] == "error" and attempts >= MAX_ATTEMPTS,
             "drives": drives, "missing": missing, "ready": not missing})
     return [groups[k] for k in sorted(groups)]
 
@@ -122,6 +132,80 @@ def _entry_drives(entry, payload: dict) -> list:
 
 def _ready(entry, payload: dict) -> bool:
     return all(os.path.isdir(d) for d in _entry_drives(entry, payload))
+
+
+def _drive_root_of(path: str):
+    """Plug-able drive root containing path, or None for internal disk.
+
+    Removable media on this system mount under /run/media/<user>/<LABEL>
+    (udisks2), so a file there belongs to the 4th path component; that
+    prefix answers 'is the drive plugged in?' even while unplugged (the
+    mount point itself does not exist then). Paths anywhere else fall
+    back to the shallowest existing mountpoint ancestor — '/' for the
+    internal disk, which is always present and can never be 'plugged in'.
+    """
+    p = os.path.abspath(path)
+    parts = p.split(os.sep)  # ['', 'run', 'media', '<user>', '<label>', ...]
+    if len(parts) >= 5 and parts[1:3] == ["run", "media"]:
+        return os.sep.join([""] + parts[1:5])
+    probe = p
+    while probe != os.path.dirname(probe):
+        if os.path.ismount(probe):
+            return probe
+        probe = os.path.dirname(probe)
+    return None
+
+
+def _move_blockers(entry, payload: dict) -> list:
+    """Extra readiness checks for queued MOVES beyond the destination
+    gate (`_ready`). Returns human-readable blockers; empty = good to run.
+
+    payload.drives lists only DESTINATION drives, so a move whose files
+    sit on an unplugged drive used to fire the moment the destination
+    connected — and burn its whole retry budget (5 fails in ~4 minutes)
+    on 'system move failed or was cancelled'. Two holes, both closed:
+      - source drives: every drive root holding the title's cataloged
+        files must be mounted before the move may run;
+      - the liked-copy drive: target=external tops the fresh backup up
+        on the title's liked drive afterwards (liked.sync_liked_copy),
+        so that drive must be mounted too or the move fails post-copy.
+    """
+    if entry["kind"] != "move":
+        return []
+    blocked: list = []
+    for r in q("SELECT path FROM files WHERE title_id=?", (entry["title_id"],)):
+        drv = _drive_root_of(r["path"])
+        if drv and drv not in blocked and not os.path.isdir(drv):
+            blocked.append(drv)
+    # a dest_root override that is NOT under any backup root lands on
+    # internal storage — its liked top-up step never runs
+    from . import fileops
+    dr = payload.get("dest_root")
+    on_backup = False
+    if dr:
+        dr = os.path.abspath(dr)
+        on_backup = any((dr + os.sep).startswith(r.rstrip(os.sep) + os.sep)
+                        for r in fileops.all_backup_roots())
+    t = q1("SELECT kind FROM titles WHERE id=?", (entry["title_id"],))
+    if t and (on_backup or (not dr and
+                            (payload.get("target") or "external") == "external")):
+        lr = fileops.liked_root(t["kind"])
+        if lr:
+            lr = os.path.abspath(lr)
+            if not os.path.isdir(lr) and lr not in blocked:
+                blocked.append(lr + " (liked copy)")
+    return blocked
+
+
+def _hold_for_blockers(entry, blockers: list):
+    """Park a move whose drive(s) are unplugged: status stays 'pending',
+    NO attempt is burned, and last_error records what to plug in so the
+    Settings queue says 'waiting for …' instead of a failure."""
+    hint = "waiting for: " + ", ".join(blockers)
+    if entry["last_error"] != hint:  # write once, not every poll
+        with tx() as c:
+            c.execute("UPDATE drive_queue SET last_error=? WHERE id=?",
+                      (hint, entry["id"]))
 
 
 def _retryable(entry) -> bool:
@@ -163,6 +247,10 @@ def run_due() -> list:
             payload = json.loads(entry["payload"] or "{}")
             if not _ready(entry, payload):
                 continue
+            blockers = _move_blockers(entry, payload)
+            if blockers:
+                _hold_for_blockers(entry, blockers)
+                continue  # a needed drive is unplugged — do NOT burn attempts
             _execute(dict(entry), payload)
             started.append(entry["id"])
     finally:
@@ -191,15 +279,24 @@ def _execute(entry, payload: dict):
     error = None
     try:
         if entry["kind"] == "move":
-            from . import mover
-            mover.move_title(jid, entry["title_id"],
-                             payload.get("target", "external"),
+            from . import mover, fileops
+            dr = payload.get("dest_root")
+            target = payload.get("target", "external")
+            mover.move_title(jid, entry["title_id"], target,
                              purge_others=bool(payload.get("purge_others")),
-                             seasons=payload.get("seasons") or None)
+                             seasons=payload.get("seasons") or None,
+                             dest_root=dr)
             # favorites keep a second copy on their liked drive: top it up
-            # after the regular backup lands (no-op for non-liked titles
-            # and kinds without a liked folder configured)
-            if payload.get("target", "external") == "external":
+            # after the regular backup lands (no-op for non-liked titles,
+            # kinds without a liked folder configured, or dest_root moves
+            # landing on internal storage)
+            tops_backup = target == "external"
+            if dr:
+                dr = os.path.abspath(dr)
+                tops_backup = any(
+                    (dr + os.sep).startswith(r.rstrip(os.sep) + os.sep)
+                    for r in fileops.all_backup_roots())
+            if tops_backup:
                 from . import liked
                 liked.sync_liked_copy(
                     title_id=entry["title_id"],
@@ -293,13 +390,16 @@ def _run_delete(entry, payload: dict, jid: str):
 
 
 def repost_errors() -> int:
-    """Boot-time data repair: entries stuck in 'error' (including ones the
-    old no-retry code dead-ended) go back to pending so the worker drains
-    them with the fixed delete query. Respects the retry cap: entries that
-    exhausted MAX_ATTEMPTS stay parked as permanent errors."""
+    """Boot-time data repair: entries stuck in 'error' go back to pending
+    with a FULL attempt budget so the worker drains them. Reposting once per
+    boot is deliberately unconditional: historical poisonings (moves that
+    burned all 5 tries against an unplugged SOURCE drive before the
+    source-aware gate existed) are indistinguishable from fresh failures,
+    and the gate now keeps drive-blocked entries parked, so a fresh boot is
+    the right moment for one more honest chance. Mid-session failures still
+    park after MAX_ATTEMPTS — the worker never reposts while running."""
     with tx() as c:
         cur = c.execute(
-            "UPDATE drive_queue SET status='pending', ran_at=NULL "
-            "WHERE status='error' AND (attempts IS NULL OR attempts < ?)",
-            (MAX_ATTEMPTS,))
+            "UPDATE drive_queue SET status='pending', ran_at=NULL, attempts=0 "
+            "WHERE status='error'")
         return cur.rowcount

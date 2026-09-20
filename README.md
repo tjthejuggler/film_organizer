@@ -37,6 +37,35 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-20** — **move ANY title to ANY configured destination**: the drawer's "Move to:"
+  row used to offer only Internal/External (seasons-only granularity for series). Now it
+  renders one button per configured root from the new
+  [`/api/move-destinations`](app/main.py) — internal storage, both per-kind regular backup
+  folders and both liked drives ([`fileops.move_destinations`](app/fileops.py)) — for movies
+  AND series, with the season picker's footer getting the same destination list. Mechanics:
+  * [`MoveIn.dest_root`](app/main.py) selects an explicit destination (validated against the
+    configured set — never an arbitrary path); [`mover.move_title`](app/mover.py) accepts a
+    `dest_root` override and derives drive + purge side from it. Unmounted destination →
+    the move is queued as usual; the queue's source/liked gate ([`_move_blockers`](app/drivequeue.py))
+    understands dest_root (liked top-up only when the destination really is a backup root).
+  * Verified end-to-end: movie moved internal→backup drive and back, sub-path (aaUnwatched/)
+    preserved, catalog rows relocated, queued variant parks with "waiting for" until the
+    drive returns.
+- **2026-09-20** — **drive queue stops punishing unplugged SOURCE drives**: 12 queued movie moves
+  to the SSK Drive burned all 5 retry attempts in ~4 minutes the moment SSK was plugged in —
+  their actual files sit on the (unplugged) T7 Shield, but the queue only gated on the
+  DESTINATION drive, so every run died instantly in the KIO helper
+  (`system move failed or was cancelled`). Fixes in [`drivequeue.py`](app/drivequeue.py):
+  * Queued **moves** now also wait for every drive their cataloged files sit on (plus the
+    liked-copy drive that `target=external` tops up afterwards). A blocked move is parked as
+    `pending` with a "waiting for: <drive>" note — **no attempt is burned** while a drive
+    it needs is missing. udisks2 mounts (`/run/media/<user>/<LABEL>`) are resolved to the
+    plug-able drive root via `_drive_root_of`.
+  * The Settings queue UI no longer claims "⚠ retrying" for entries past the retry cap
+    (now "⚠ failed") and lists exactly which drive to plug in
+    ("⏳ waiting for: … — plug it in to run") — [`app.js`](static/app.js).
+  * Boot repair (`repost_errors`) now restores a full attempt budget for stuck entries and
+    the 21 poisoned rows were reset, so the moves will run once their source drives return.
 - **2026-09-20** — **Seen ≡ Watched merge; chained sorting; Metacritic + average score; RT color tiers**:
   * The separate "seen" tag is gone — everything previously in the seen log is now simply
     **watched** (one-time data migration; owning a file or not no longer matters). The seen-log

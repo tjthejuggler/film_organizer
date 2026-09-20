@@ -314,7 +314,8 @@ class ExtWatchedIn(BaseModel):
 
 
 class MoveIn(BaseModel):
-    target: str  # "internal" | "external"
+    target: str = "external"  # "internal" | "external" (ignored when dest_root is set)
+    dest_root: Optional[str] = None  # explicit destination folder (Move to list)
     purge_others: bool = False  # consolidation: also delete copies on the other side
     seasons: Optional[List[int]] = None  # series: move only these seasons (None = all)
 
@@ -1375,18 +1376,32 @@ def cancel_job(jid: str):
 
 
 # ---- move between internal / external storage -----------------------------
+@app.get("/api/move-destinations")
+def move_destinations():
+    """Configured move destinations (internal + per-kind backup + liked
+    roots) for the drawer's 'Move to' buttons, each flagged with whether
+    the drive is currently mounted."""
+    return {"destinations": fileops.move_destinations()}
+
+
 @app.post("/api/titles/{tid}/move")
 def move_title(tid: int, body: MoveIn):
     if body.target not in ("internal", "external"):
         raise HTTPException(400, "target must be 'internal' or 'external'")
+    if body.dest_root:
+        # must be one of the CONFIGURED destinations — never an arbitrary path
+        allowed = {d["root"] for d in fileops.move_destinations()}
+        if os.path.abspath(body.dest_root) not in allowed:
+            raise HTTPException(400, "dest_root is not a configured destination")
     row = _get_title_or_404(tid)  # 404 early; mover raises ValueError for config issues
     seasons = sorted(set(body.seasons)) if body.seasons else None
     sel = f" (seasons {', '.join(map(str, seasons))} only)" if seasons else ""
-    # target drive not connected right now? queue it — runs automatically
-    # the moment the drive is plugged in (Settings shows what is waiting).
-    # external destinations resolve per the title's kind (backup_movies_
-    # root vs backup_series_root; legacy external_root drive otherwise)
-    if body.target == "external":
+    # destination resolved once here: dest_root override wins, else the
+    # title's kind decides the external destination (backup_movies_root vs
+    # backup_series_root; legacy external_root drive otherwise)
+    if body.dest_root:
+        dest = os.path.abspath(body.dest_root)
+    elif body.target == "external":
         dest = fileops.regular_root(row["kind"])
     else:
         dest = db.settings_get("internal_root")
@@ -1394,22 +1409,20 @@ def move_title(tid: int, body: MoveIn):
         dest = os.path.abspath(dest)
         qid, created = drivequeue.enqueue(
             "move", tid, dest,
-            {"target": body.target, "purge_others": body.purge_others,
-             "seasons": seasons},
+            {"target": body.target, "dest_root": dest,
+             "purge_others": body.purge_others, "seasons": seasons},
             f"Move '{row['title']}' to {dest}{sel}")
         return {"job_id": None, "queued": True, "queue_id": qid,
                 "queued_now": created, "drive": dest}
-    # (reachable-target moves sync via drivequeue._execute / mover hook;
-    # the queued branch syncs when the drive finally connects)
-    sel = f" (seasons {', '.join(map(str, seasons))} only)" if seasons else ""
     jid = jobs.create("move", total=0)
-    jobs.log(jid, f"Move requested: title {tid} -> {body.target}{sel}")
+    jobs.log(jid, f"Move requested: title {tid} -> {dest or body.target}{sel}")
 
     def _run(job):
         error = None
         try:
             mover.move_title(job, tid, body.target,
-                             purge_others=body.purge_others, seasons=seasons)
+                             purge_others=body.purge_others, seasons=seasons,
+                             dest_root=body.dest_root)
             lut_sync.request_sync("move")   # voice fast-path follows the file
         except Exception as e:
             jobs.log(job, f"FAILED: {e}")

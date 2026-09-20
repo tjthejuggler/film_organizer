@@ -420,13 +420,19 @@ async function refreshDriveQueue() {
         : '<span class="off">waiting for connection</span>'}
     </li>
     ${g.items.map(it => {
-      // an entry may wait for MORE drives than this group's primary one:
-      // only say "will run now" when every drive it needs is mounted
+      // an entry may wait for MORE drives than this group's primary one —
+      // for moves this includes the drive its FILES sit on and the liked-
+      // copy drive, so `missing` names exactly what to plug in
       const itemDrives = it.drives || [g.drive];
       const missing = it.missing || [];
       const wait = it.ready ? "" : missing.length
-        ? `<div class="dim" style="font-size:11.5px">⏳ also waiting for: ${esc(missing.join(", "))}</div>`
+        ? `<div class="dim" style="font-size:11.5px">⏳ waiting for: ${esc(missing.join(" and "))} — plug it in to run</div>`
         : `<div class="dim" style="font-size:11.5px">⏳ waiting for: ${esc(itemDrives.join(", "))}</div>`;
+      // an error entry below the retry cap comes back by itself ("retrying");
+      // past the cap it never will — say so, with the reason at hand
+      const errBadge = it.exhausted
+        ? `<span class="badge err" title="${esc(it.last_error || "failed")}">⚠ failed</span>`
+        : `<span class="badge err" title="${esc(it.last_error || "failed — will retry")}">⚠ retrying</span>`;
       return `
     <li class="qitem">
       <div style="flex:1;min-width:0">
@@ -434,7 +440,7 @@ async function refreshDriveQueue() {
         ${wait}
       </div>
       ${it.status === "error"
-        ? `<span class="badge err" title="${esc(it.last_error || "failed — will retry")}">⚠ retrying</span>`
+        ? errBadge
         : it.ready && g.mounted
           ? '<span class="st" style="color:var(--ok)">will run now</span>'
           : ""}
@@ -519,6 +525,35 @@ $("#delAll").onclick = () => runDelete(false);
 $("#delKeep").onclick = () => runDelete(true);
 
 /* ---------- drawer ---------- */
+
+// friendly label for a move destination (drawer buttons, toasts, confirm)
+function destLabel(root, target) {
+  if (!root) return target === "internal" ? "💻 Internal" : "🔌 External";
+  const last = root.split("/").filter(Boolean).pop() || root;
+  return last.charAt(0).toUpperCase() + last.slice(1);
+}
+
+// one 'Move to' button per configured destination (internal + per-kind
+// backup + liked roots); unavailable drives still render — clicking them
+// queues the move, and the drive-queue gate now waits for every drive
+// the move actually needs
+async function moveDestButtons(t) {
+  let dests;
+  try {
+    ({ destinations: dests } = await api("/api/move-destinations"));
+  } catch { dests = []; }
+  return dests.map(d => {
+    const here = t.storage_side === "external"
+      ? d.role === "internal"
+      : d.role !== "internal";
+    const mark = d.mounted ? (here ? " •" : "") : " ⏳";
+    const title = d.mounted
+      ? `Move to ${d.root}`
+      : `${d.root} is not connected — the move will be queued until it is`;
+    return `<button class="btn mini" data-dest data-target="${d.role === "internal" ? "internal" : "external"}" data-root="${esc(d.root)}" title="${esc(title)}">${esc(destLabel(d.root, d.role))}${mark}</button>`;
+  });
+}
+
 const EDIT_FIELDS = [
   ["runtime", "Runtime (min) — episode length for series", "number"],
   ["rating_imdb", "IMDb rating (0-10)", "number", "0.1"],
@@ -590,12 +625,7 @@ async function openDrawer(id) {
     </details>` : ""}
     <div class="moverow">
       <span class="mlab">Move to:</span>
-      ${(t.on_both_drives
-        ? `<button class="btn mini" id="dMoveInt" title="Consolidate on internal storage — the external copy moves back and every leftover duplicate copy is deleted, so the title ends up in ONE place only">💻 Internal</button>
-      <button class="btn mini" id="dMoveExt" title="Consolidate on the external drive — the internal copy moves over (Movies/ or Series/ per kind) and every leftover duplicate copy is deleted, so the title ends up in ONE place only">🔌 External</button>`
-        : t.storage_side === "external"
-          ? `<button class="btn mini" id="dMoveInt" title="Move files back to the internal folder configured in Settings">💻 Internal</button>`
-          : `<button class="btn mini" id="dMoveExt" title="Move files to the external drive (lands in its Movies/ or Series/ folder per the title's kind)">🔌 External</button>`)}
+      ${(await moveDestButtons(t)).join("")}
       ${t.kind === "series" && t.files.some(f => !f.missing) ? `
       <button class="btn mini seasonsbtn" id="dSeasons"
         title="Choose seasons — move only the seasons you pick instead of the whole series">✏️</button>` : ""}
@@ -705,25 +735,28 @@ async function openDrawer(id) {
       updateEpProgress(r);
     } catch (err) { alert(err.message); }
   };
-  const doMove = async target => {
-    const label = target === "internal" ? "internal" : "external";
-    const dupNote = t.on_both_drives
-      ? `\n\nThis title is duplicated on BOTH drives — after the move only the ${label} copy remains; copies on the other drive are deleted.` : "";
-    if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to the ${label} folder?${dupNote}`)) return;
+  const doMove = async (target, destRoot) => {
+    const body = { target, purge_others: true };
+    if (destRoot) body.dest_root = destRoot;
     try {
-      const r = await api(`/api/titles/${id}/move`, { method: "POST", body: { target, purge_others: true } });
+      const r = await api(`/api/titles/${id}/move`, { method: "POST", body });
       if (r.queued) {
-        alert(`The ${label} drive (${r.drive}) is not connected right now.
+        alert(`The destination drive (${r.drive}) is not connected right now.
 The move was queued and runs automatically when it is connected (Settings → Drive queues).`);
       } else {
-        watchJob(r.job_id, `Move → ${label}`);
+        watchJob(r.job_id, `Move → ${destLabel(destRoot, target)}`);
       }
     } catch (err) { alert(err.message); }
   };
-  const dMoveInt = $("#dMoveInt");
-  if (dMoveInt) dMoveInt.onclick = () => doMove("internal");
-  const dMoveExt = $("#dMoveExt");
-  if (dMoveExt) dMoveExt.onclick = () => doMove("external");
+  $$("#dBody [data-dest]").forEach(b => {
+    const { target, root } = b.dataset;
+    b.onclick = async () => {
+      const dupNote = t.on_both_drives
+        ? `\n\nThis title is duplicated on BOTH sides — after the move every copy outside the destination is deleted.` : "";
+      if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to ${destLabel(root, target)}?${dupNote}`)) return;
+      await doMove(target, root || null);
+    };
+  });
 
   // ---- season picker (series: move only the checked seasons) ----
   const dSeasons = $("#dSeasons");
@@ -741,26 +774,36 @@ The move was queued and runs automatically when it is connected (Settings → Dr
       </label>`).join("");
     $("#mvAll").onclick = () => $$("#mvList input").forEach(i => i.checked = true);
     $("#mvNone").onclick = () => $$("#mvList input").forEach(i => i.checked = false);
-    const moveChecked = async target => {
+    const moveChecked = async (target, destRoot) => {
       const sel = $$("#mvList input:checked").map(i => Number(i.dataset.season));
       if (!sel.length) { alert("Tick at least one season to move."); return; }
-      const label = target === "internal" ? "internal" : "external";
-      const n = sel.reduce((acc, s) => acc + epCount(s), 0);
-      if (!confirm(`Move season(s) ${sel.join(", ")} of "${t.title}" (${n} file(s)) to the ${label} folder? Unticked seasons stay where they are.`)) return;
+      const body = { target, purge_others: true, seasons: sel };
+      if (destRoot) body.dest_root = destRoot;
+      if (!confirm(`Move season(s) ${sel.join(", ")} of "${t.title}" to ${destLabel(destRoot, target)}? Unticked seasons stay where they are.`)) return;
       try {
-        const r = await api(`/api/titles/${id}/move`,
-          { method: "POST", body: { target, purge_others: true, seasons: sel } });
+        const r = await api(`/api/titles/${id}/move`, { method: "POST", body });
         $("#mvModal").classList.add("hidden");
         if (r.queued) {
-          alert(`The ${label} drive (${r.drive}) is not connected right now.
+          alert(`The destination drive (${r.drive}) is not connected right now.
 The move was queued and runs automatically when it is connected (Settings → Drive queues).`);
         } else {
-          watchJob(r.job_id, `Move S${sel.join(",S")} → ${label}`);
+          watchJob(r.job_id, `Move S${sel.join(",S")} → ${destLabel(destRoot, target)}`);
         }
       } catch (err) { alert(err.message); }
     };
-    $("#mvInt").onclick = () => moveChecked("internal");
-    $("#mvExt").onclick = () => moveChecked("external");
+    // one destination button per configured root (same list as the drawer)
+    api("/api/move-destinations").then(({ destinations: dests }) => {
+      $("#mvDests").innerHTML = dests.map(d =>
+        `<button class="btn mini" data-mvdest data-target="${d.role === "internal" ? "internal" : "external"}" data-root="${esc(d.root)}" title="${esc(d.mounted ? d.root : d.root + " — not connected, move will be queued")}">${esc(destLabel(d.root, d.role))}${d.mounted ? "" : " ⏳"}</button>`
+      ).join("");
+      $$("#mvDests [data-mvdest]").forEach(b => {
+        const { target, root } = b.dataset;
+        b.onclick = () => moveChecked(target, root || null);
+      });
+    }).catch(() => {
+      $("#mvInt").onclick = () => moveChecked("internal");
+      $("#mvExt").onclick = () => moveChecked("external");
+    });
     dSeasons.onclick = () => $("#mvModal").classList.remove("hidden");
   }
 
