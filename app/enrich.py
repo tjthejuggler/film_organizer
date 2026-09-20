@@ -54,19 +54,138 @@ def _apply(row_id: int, data: dict, source: str, status="matched", manual_edits=
         c.execute(f"UPDATE titles SET {', '.join(sets)} WHERE id=?", vals)
 
 
+# "X aka Y" bilingual releases: try either half as the searchable title
+_AKA_SPLIT_RE = re.compile(r"\s+aka\s+", re.I)
+# network/studio course prefixes are packaging, not the title
+_BROADCAST_PREFIX_RE = re.compile(
+    r"^(?:bbc|itv|c4|channel\s*4|pbs|ttc|nat\s?geo|national\s*geographic|"
+    r"discovery|history\s*channel)\s+", re.I)
+# "Stephen King's The Stand" -> "The Stand": possessive branding prefixes
+_POSSESSIVE_RE = re.compile(r"^[\w.'\u2019 ]{2,40}?['\u2019]s\s+")
+# season tags that leaked into the stored title ("white lotus 3")
+_TRAILING_NUM_RE = re.compile(r"\s*\d+$")
+
+
+def _title_variants(title: str) -> list:
+    """Cleanup variants of a stored title, most faithful first. Extra
+    variants are only reached when the earlier ones produce no confident
+    TMDB candidate, so real titles ending in a number ('Apollo 13') or
+    containing an aka never lose their first-choice search."""
+    variants: list = []
+
+    def add(v: str):
+        v = (v or "").strip(" .,_-:;\u2013\u2014")
+        if v and v.lower() not in {x.lower() for x in variants}:
+            variants.append(v)
+
+    add(title)
+    # squashed-together names: 'TheChairCompany' -> 'The Chair Company'
+    add(re.sub(r"(?<=[a-z])(?=[A-Z])", " ", title))
+    parts = _AKA_SPLIT_RE.split(title, maxsplit=1)
+    if len(parts) == 2:
+        add(parts[0])
+        add(parts[1])
+    add(_POSSESSIVE_RE.sub("", title))
+    add(_BROADCAST_PREFIX_RE.sub("", title))
+    add(parser._TRAILING_COUNTRY_RE.sub("", title).strip())
+    add(_TRAILING_NUM_RE.sub("", title))
+    # TMDB files "Jim & Andy" with an ampersand; release names spell 'and'
+    if re.search(r"\band\b", title, re.I):
+        add(re.sub(r"\s+and\s+", " & ", title, flags=re.I))
+    return variants
+
+
+def _year_ok(cand_name_date, year) -> bool:
+    """A candidate is year-compatible when we stored no year, the
+    candidate has no date, or both sit within ±3 years. Guards the
+    year-less retry: 'The Stand' stored as 1994 must NOT latch onto the
+    2016 film of the same name."""
+    cy = tmdb._year_of(cand_name_date)
+    return not (year and cy and abs(int(year) - cy) > 3)
+
+
 def _search_variants(title: str, year, kind: str) -> list:
-    """Try the plain title first; for squashed-together names also try a
-    CamelCase-split variant (e.g. 'TheChairCompany' -> 'The Chair Company')."""
-    variants = [title]
-    split = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", title)
-    if split != title:
-        variants.append(split)
-    cands = []
-    for v in variants:
-        cands = tmdb.search_tv(v, year) if kind == "series" else tmdb.search_movie(v, year)
-        if tmdb.best_candidate(cands) is not None:
-            break
-    return cands
+    # a stored year that IS the title ("1899" -> year=1899) was never
+    # release metadata: the parser read the title token as a year, so it
+    # must not steer (or veto) the search at all
+    if year is not None and str(year) == (title or "").strip():
+        year = None
+    """Try progressively looser searches until one yields a confident
+    candidate. Two axes of loosening: title cleanup variants (aka alias
+    halves, possessive/network prefixes, trailing season tags) and the
+    year filter itself — TMDB treats `year` as a HARD filter, so a single
+    stale/wrong folder year (Boss Level 2020 vs 2021, or the show 1899)
+    must never zero out the whole search. The year-less retry only accepts
+    candidates within ±3 years of the stored year; anything further is
+    left to the LLM pass. When nothing clears the bar, the WITH-YEAR
+    candidate list is returned — those results are year-safe by
+    construction (the provider filtered them), so the caller's fallback
+    matcher can still rescue a subtitle/short-form match without ever
+    latching onto a same-name title from the wrong decade."""
+    variants = _title_variants(title)
+    cands: list = []
+    fallback: list = []  # with-year (or unfiltered) results: year-safe
+    for attempt_year in ([year, None] if year is not None else [None]):
+        for v in variants:
+            cands = (tmdb.search_tv(v, attempt_year) if kind == "series"
+                     else tmdb.search_movie(v, attempt_year))
+            if not fallback:
+                # year-filtered results are inherently compatible; with no
+                # stored year there is nothing to contradict, so the plain
+                # first search is just as safe a fallback pool
+                fallback = cands
+            best = tmdb.best_candidate(cands)
+            if best is not None and (attempt_year is not None
+                                     or _year_ok(best.get("date"), year)):
+                return cands
+    return fallback
+
+
+_SUBTITLE_SEP_RE = re.compile(r"\s*[:\u2013\u2014]\s+|\s+-\s+")
+
+
+def _confident_prefix(cands: list, name: str, year):
+    """Second-chance matcher for correct answers the string scorer rejects
+    (score < threshold even though the candidate is right). Two safe
+    shapes only:
+    * candidate = query + subtitle ("Anchorman" -> "Anchorman: The Legend
+      of Ron Burgundy") — the extra text must start with a ': ' / '- '
+      separator, so 'Europa' can never grab 'Europa Europa';
+    * candidate = the marketing short form of the query ("F9: The Fast
+      Saga" is filed as "F9") — candidate tokens must be a token-prefix of
+      the query, popularity must be high, and the year must not contradict.
+    """
+    qk = parser.normalize_key(name)
+    if not qk or not cands:
+        return None
+    q_toks = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t]
+    ranked = sorted(cands, key=lambda c: (c["score"], c["popularity"]), reverse=True)
+    # deep window: the right subtitle-bearing candidate often ranks below
+    # noise (sequels share the prefix and out-score the original); the
+    # separator/token rules — not rank order — are what guards correctness
+    for c in ranked[:8]:
+        disp = c.get("name") or ""
+        ck = parser.normalize_key(disp)
+        if not ck or ck == qk:
+            continue
+        if not _year_ok(c.get("date"), year):
+            continue
+        # "Anchorman" -> "Anchorman: The Legend of Ron Burgundy": the whole
+        # query must be a token PREFIX and the remainder must begin with a
+        # subtitle separator — "Anchorman 2: ..." continues with the token
+        # '2' (not a separator), so sequels can never shadow the original
+        prefix = disp.lower().startswith(name.lower().strip()) and \
+            bool(_SUBTITLE_SEP_RE.match(disp[len(name.strip()):]))
+        c_toks = [t for t in re.split(r"[^a-z0-9]+", disp.lower()) if t]
+        # "F9: The Fast Saga" is filed as just "F9" — candidate tokens are
+        # a token-prefix of the query. Popularity gate keeps one-letter/
+        # acronym collisions (a random 'F9' short) out; blockbusters file
+        # low on first release, so the gate is modest
+        shortened = (len(ck) >= 2 and c_toks and q_toks[:len(c_toks)] == c_toks
+                     and (c.get("popularity") or 0) >= 5)
+        if prefix or shortened:
+            return c
+    return None
 
 
 def _llm_futile(title: str) -> bool:
@@ -128,6 +247,14 @@ def enrich_one(row, job_log=None, force=False, respect_cap=True):
     try:
         cands = _search_variants(title, year, kind)
         best = tmdb.best_candidate(cands)
+        # second-chance matcher: correct answers the string scorer rejects
+        # (subtitle extensions / marketing short forms) — see
+        # _confident_prefix for the two shapes this may legally accept
+        if best is None:
+            best = _confident_prefix(cands, title, year)
+            if best is not None and job_log:
+                job_log(f"relaxed match accepted: {title!r} -> {best['name']} "
+                        f"({best.get('date')})")
 
         # LLM cleanup pass — at most ONE attempt per title, ever. If it
         # already failed once (llm_attempts >= 1), don't burn time on it
@@ -145,7 +272,21 @@ def enrich_one(row, job_log=None, force=False, respect_cap=True):
                 job_log(f"LLM name cleanup running for: {title!r} (can take ~15s)")
             llm_used = True
             cleaned = llm.clean_title(title, hint_kind=kind)
-            if cleaned and parser.normalize_key(cleaned["title"]) != parser.normalize_key(title):
+            # apply when the LLM changed the SPELLING or the KIND. Spelling
+            # matters even when the normalized key is identical: the gate
+            # must compare raw strings, or squashed names would never get
+            # the LLM's spaced spelling persisted ("museumofinnocence" ->
+            # "Museum of Innocence" — same key, only the spaced form is
+            # searchable). Kind-only flips ("The Stand" filed as a movie,
+            # really the 1994 miniseries) apply too unless kind is locked.
+            title_changed = (cleaned is not None
+                             and cleaned["title"].strip().lower() != (title or "").strip().lower())
+            kind_flip_only = (cleaned is not None
+                              and not title_changed
+                              and cleaned["kind"] in ("movie", "series")
+                              and cleaned["kind"] != kind)
+            if cleaned and (title_changed
+                            or (kind_flip_only and not row["kind_locked"])):
                 new_title = cleaned["title"]
                 new_year = cleaned["year"]
                 new_kind = cleaned["kind"]
@@ -177,9 +318,10 @@ def enrich_one(row, job_log=None, force=False, respect_cap=True):
                     pass  # dedupe collision: row identity stays, retry still uses the clean name
                 kind, title, year = eff_kind, new_title, new_year or year
                 try:
-                    cands = (tmdb.search_tv(title, year) if kind == "series"
-                             else tmdb.search_movie(title, year))
+                    cands = _search_variants(title, year, kind)
                     best = tmdb.best_candidate(cands)
+                    if best is None:
+                        best = _confident_prefix(cands, title, year)
                 except Exception as e:
                     with tx() as c:
                         c.execute(

@@ -88,27 +88,34 @@ def score(name: str, year, cand_name: str, cand_date) -> float:
 def search_movie(name: str, year=None) -> list:
     data = _get("/search/movie", query=name, include_adult="false",
                 **({"year": int(year)} if year else {}))
-    return [
-        {"id": r["id"], "name": r.get("title") or "", "date": r.get("release_date"),
-         "score": score(name, year, r.get("title") or "", r.get("release_date")),
-         "popularity": r.get("popularity") or 0,
-         "poster": _img(r.get("poster_path"), "w185"),
-         "overview": (r.get("overview") or "")[:200]}
-        for r in data.get("results", [])
-    ]
+    out = []
+    for r in data.get("results", []):
+        t, orig, date = r.get("title") or "", r.get("original_title") or "", r.get("release_date")
+        # foreign releases are often filed under an English international
+        # title ('El robo del siglo' -> 'The Heist of the Century'); the
+        # stored title may equal EITHER, so score against both
+        s = max(score(name, year, t, date),
+                score(name, year, orig, date) if orig else 0.0)
+        out.append({"id": r["id"], "name": t, "date": date, "score": s,
+                    "popularity": r.get("popularity") or 0,
+                    "poster": _img(r.get("poster_path"), "w185"),
+                    "overview": (r.get("overview") or "")[:200]})
+    return out
 
 
 def search_tv(name: str, year=None) -> list:
     data = _get("/search/tv", query=name, include_adult="false",
                 **({"first_air_date_year": int(year)} if year else {}))
-    return [
-        {"id": r["id"], "name": r.get("name") or "", "date": r.get("first_air_date"),
-         "score": score(name, year, r.get("name") or "", r.get("first_air_date")),
-         "popularity": r.get("popularity") or 0,
-         "poster": _img(r.get("poster_path"), "w185"),
-         "overview": (r.get("overview") or "")[:200]}
-        for r in data.get("results", [])
-    ]
+    out = []
+    for r in data.get("results", []):
+        t, orig, date = r.get("name") or "", r.get("original_name") or "", r.get("first_air_date")
+        s = max(score(name, year, t, date),
+                score(name, year, orig, date) if orig else 0.0)
+        out.append({"id": r["id"], "name": t, "date": date, "score": s,
+                    "popularity": r.get("popularity") or 0,
+                    "poster": _img(r.get("poster_path"), "w185"),
+                    "overview": (r.get("overview") or "")[:200]})
+    return out
 
 
 def best_candidate(cands: list, threshold=0.55):

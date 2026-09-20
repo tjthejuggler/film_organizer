@@ -14,6 +14,7 @@ Grouping rules
   Nearest ancestor wins; these never cancel each other by substring.
 """
 import os
+import re
 from datetime import datetime, timezone
 
 from . import config, consolidate, db, notifications, parser
@@ -29,7 +30,15 @@ CONTAINER_NAMES = {
     "aanextmovie", "aanextseries",
 }
 
-LEADING_EP_RE = parser.re.compile(r"^\D{0,4}?(\d{1,3})\b")
+# multi-film pack folders: the folder names a COLLECTION, the files inside
+# name the actual movies ("Austin Powers Trilogy 1997,1999,2002" holding
+# "Austin Powers The Spy Who Shagged Me 1999 ..."). Never anchor a movie on
+# the collection name when the file itself carries its own title+year.
+COLLECTION_DIR_RE = re.compile(
+    r"trilogy|quadrilogy|collection|anthology|boxset|box[\s._-]set|"
+    r"movie[\s._-]pack|films?[\s._-]pack", re.I)
+
+LEADING_EP_RE = re.compile(r"^\D{0,4}?(\d{1,3})\b")
 
 
 def _now() -> str:
@@ -62,6 +71,9 @@ def _anchor_for(path: str, root: str, pf: dict):
                         pass  # "Season 1" etc. - title lives above
                     elif pf["is_series"]:
                         return d, pd["title"], pd["year"], "series"
+                    elif COLLECTION_DIR_RE.search(name) and pf["title"] and \
+                            (pf["year"] or pf["has_meta"]):
+                        break  # multi-film pack: the FILE names the movie
                     elif (pd["has_meta"] or pd["year"]
                           or parser.MASTERCLASS_RE.search(name)
                           or len(pd["title"].split()) >= 3):

@@ -5,10 +5,18 @@ the LLM extracts a clean {title, year, kind} which we then re-search.
 """
 import json
 import re
+import threading
 
 import httpx
 
 from . import db
+
+# the enrichment worker pool fires up to 4 titles at once and every one of
+# them may need an LLM cleanup; hammering the endpoint concurrently is what
+# turns a 15s timeout into a coin flip. A module-level lock serializes the
+# calls (they are the slowest step either way) and a bounded queue avoids
+# starving a worker forever.
+_llm_lock = threading.Lock()
 
 
 def enabled() -> bool:
@@ -32,7 +40,10 @@ def _chat(messages: list, force_json=True):
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
             json=payload,
-            timeout=15,  # a slow LLM endpoint must not stall enrich per title
+            # calls are serialized by _llm_lock, so a slow endpoint stalls
+            # the LLM QUEUE (not the whole enrich pool); 30s leaves room
+            # for reasoning models doing a multi-second cleanup
+            timeout=30,
         )
 
     r = _post()
@@ -85,10 +96,14 @@ def clean_title(raw_name: str, hint_kind: str = None):
     )
     user = raw_name if not hint_kind else f"{raw_name} (probably a {hint_kind})"
     try:
-        content = _chat([
-            {"role": "system", "content": sys},
-            {"role": "user", "content": user},
-        ])
+        # one call at a time: concurrent cleanups time out and burn the
+        # title's single LLM attempt on a transport error, not a real
+        # 'the LLM cannot clean this' verdict
+        with _llm_lock:
+            content = _chat([
+                {"role": "system", "content": sys},
+                {"role": "user", "content": user},
+            ])
         d = _parse_json(content)
         if not d.get("title"):
             return None

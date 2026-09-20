@@ -228,6 +228,7 @@ def parse_name(raw: str) -> dict:
     year = None
     year_start = None
     cut = len(region)
+    first_alnum = True
     for mt in re.finditer(r"\S+", region):
         tok = mt.group(0)
         if not any(ch.isalnum() for ch in tok):
@@ -239,7 +240,14 @@ def parse_name(raw: str) -> dict:
             year = int(core)
             year_start = mt.start()
             continue
-        if _token_is_junk(tok):
+        if first_alnum:
+            # the first real token is never junk-cut: release grammars put
+            # the title first, so a codec/channel-looking word there IS the
+            # title ("Opus" the film vs the opus codec, "20" of "20 Days in
+            # Mariupol" vs the 2.0 channel tag) — previously both titles
+            # were eaten whole and the raw filename became the row title
+            first_alnum = False
+        elif _token_is_junk(tok):
             cut = mt.start()
             break
 

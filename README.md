@@ -37,6 +37,34 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-18** — **"not_found" epidemic fixed at the root**: 90+ real movies/shows
+  were sitting in the library labelled "likely not a catalogued movie/show". Five
+  independent root causes, all fixed:
+  1. TMDB `year` is a HARD filter — one stale folder year ("Boss Level" 2020 vs
+     2021) zeroed the whole search. [`_search_variants`](app/enrich.py) now retries
+     year-less and only accepts candidates within ±3 years of the stored year.
+  2. Titles that ARE years ("1899") had year=1899 steering the search — detected
+     and neutralized.
+  3. Correct answers the string scorer rejected ("Anchorman" → "Anchorman: The
+     Legend of Ron Burgundy", "F9: The Fast Saga" → "F9") now rescued by a
+     two-shape fallback matcher ([`_confident_prefix`](app/enrich.py):
+     subtitle-extension and token-prefix short-form, both year-gated).
+  4. Foreign titles are filed under original titles ("El robo del siglo" →
+     "The Heist of the Century") — [`search_movie`](app/tmdb.py) /
+     [`search_tv`](app/tmdb.py) score against `original_title`/`original_name` too.
+  5. LLM cleanup gate compared normalized keys, so same-key fixes were dropped:
+     "museumofinnocence" → "Museum of Innocence" and kind-only flips ("The Stand"
+     movie → the 1994 miniseries) now apply. LLM calls are serialized
+     ([`_llm_lock`](app/llm.py)) — concurrent calls used to time out and burn the
+     title's single LLM attempt on a transport error. Also: "X aka Y" split,
+     possessive/network prefix stripping ("BBC Koko…", "TTC - …"), '&' spelling
+     variants, collection-folder anchoring ("Austin Powers Trilogy 1997,1999,2002"
+     now yields to the per-file titles inside), and codec-looking FIRST title
+     tokens ("Opus", "20 Days in Mariupol") are never junk-cut in
+     [`parse_name`](app/parser.py). DB repaired in place: 94 not_found rows reset,
+     re-enriched (+~50 matched), 18 duplicate rows consolidated. Remaining ~41 are
+     genuinely not in TMDB (courses, YouTube originals, juggling tutorials,
+     freediving web docs).
 - **2026-09-18** — **drive queue actually drains now**: three bugs fixed.
   (1) Queued deletes crashed with `KeyError: 'size_bytes'` (starved SELECT
   in the queue's scoped delete) — every queued delete died the moment its
