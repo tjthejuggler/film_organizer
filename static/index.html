@@ -253,6 +253,16 @@
   </div>
 </div>
 
+<!-- move-to folder picker: EVERY configured destination, full paths -->
+<div id="destModal" class="modal hidden">
+  <div class="sheet delsheet">
+    <div class="shead"><h2>Move <span id="dmName"></span> to…</h2><button class="btn ghost" id="dmClose">✕</button></div>
+    <p class="hint">Every configured folder with its <b>full path</b> — including other library folders
+      on the same drive. A move consolidates: copies outside the chosen folder are removed.</p>
+    <div id="dmList" class="dmlist"></div>
+  </div>
+</div>
+
 <!-- watched-history modal -->
 <div id="histModal" class="modal hidden">
   <div class="sheet">

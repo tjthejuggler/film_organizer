@@ -308,12 +308,19 @@ document.addEventListener("click", async e => {
         t.watch_next = null;
         renderRows();
       } else {
+        // instant visual confirmation: color the button + row NOW — the
+        // actual pin only lands in the DB when the copy job finishes, so
+        // a plain load() here would repaint the button as un-clicked
+        t.watch_next = t.kind;          // optimistic; load() corrects later
+        renderRows();
         const r = await api(`/api/titles/${id}/watch-next`, { method: "POST" });
+        // watchJob reloads the list itself once the copy job completes
         watchJob(r.job_id, `Watch Next — ${t.title}`);
-        load();
       }
     } catch (err) {
       // 409 names the drive to connect; 400 explains missing settings
+      t.watch_next = null;              // roll the optimistic pin back
+      renderRows();
       alert(err.message);
     }
     nbtn.disabled = false;
@@ -542,7 +549,10 @@ async function moveDestButtons(t) {
   try {
     ({ destinations: dests } = await api("/api/move-destinations"));
   } catch { dests = []; }
-  return dests.map(d => {
+  // exactly TWO canonical side buttons (💻 internal / 🔌 external backup);
+  // every other configured folder lives behind the "Other folder…" popup
+  const side = (d) => {
+    if (!d) return "";
     const here = t.storage_side === "external"
       ? d.role === "internal"
       : d.role !== "internal";
@@ -551,7 +561,46 @@ async function moveDestButtons(t) {
       ? `Move to ${d.root}`
       : `${d.root} is not connected — the move will be queued until it is`;
     return `<button class="btn mini" data-dest data-target="${d.role === "internal" ? "internal" : "external"}" data-root="${esc(d.root)}" title="${esc(title)}">${esc(destLabel(d.root, d.role))}${mark}</button>`;
+  };
+  const int = dests.find(d => d.role === "internal");
+  const ext = dests.find(d => d.role === "backup" && d.kind === t.kind)
+    || dests.find(d => d.role === "backup");
+  // MUST be an array — the drawer template does .join("") on the result
+  return [side(int), side(ext)].filter(Boolean);
+}
+
+const DM_ROLE_BADGE = {
+  internal: '<span class="badge">internal</span>',
+  backup: '<span class="badge">backup</span>',
+  liked: '<span class="badge wanted">liked</span>',
+  library: '<span class="badge genre">library</span>',
+};
+
+// folder picker for moves: EVERY configured destination with its FULL PATH —
+// internal, backup/liked drives AND the scanned library roots, so a title
+// can even move from one library folder to another on the same drive
+// (~/Videos -> ~/Downloads). onPick(target, root) receives the choice.
+async function openDestPicker(name, onPick) {
+  let dests;
+  try {
+    ({ destinations: dests } = await api("/api/move-destinations"));
+  } catch { dests = []; }
+  $("#dmName").textContent = name;
+  $("#dmList").innerHTML = dests.map(d => `
+    <div class="dmitem${d.mounted ? "" : " off"}"
+      data-dmroot="${esc(d.root)}"
+      data-dmtarget="${d.role === "internal" ? "internal" : "external"}"
+      title="${d.mounted ? `Move to ${esc(d.root)}` : esc(d.root) + " is not connected — the move will be queued until it is"}">
+      <span class="dmpath">📁 ${esc(d.root)}</span>
+      ${DM_ROLE_BADGE[d.role] || ""}${d.mounted ? "" : '<span class="badge warn">⏳ queued</span>'}
+    </div>`).join("");
+  $$("#dmList .dmitem").forEach(el => {
+    el.onclick = () => {
+      $("#destModal").classList.add("hidden");
+      onPick(el.dataset.dmtarget, el.dataset.dmroot);
+    };
   });
+  $("#destModal").classList.remove("hidden");
 }
 
 const EDIT_FIELDS = [
@@ -626,6 +675,8 @@ async function openDrawer(id) {
     <div class="moverow">
       <span class="mlab">Move to:</span>
       ${(await moveDestButtons(t)).join("")}
+      <button class="btn mini" id="dAnyFolder"
+        title="Pick ANY configured folder — full paths, including other library folders on the same drive">📁 Other folder…</button>
       ${t.kind === "series" && t.files.some(f => !f.missing) ? `
       <button class="btn mini seasonsbtn" id="dSeasons"
         title="Choose seasons — move only the seasons you pick instead of the whole series">✏️</button>` : ""}
@@ -703,16 +754,33 @@ async function openDrawer(id) {
     openDrawer(id); load();
   };
   $("#dNext").onclick = async () => {
+    const btn = $("#dNext");
     try {
       if (t.watch_next) {
         await api(`/api/titles/${id}/watch-next`, { method: "DELETE" });
         openDrawer(id); load();
       } else {
+        // instant confirmation: color the drawer button + keep the list row
+        // in sync — the pin only lands in the DB when the copy job finishes,
+        // so refetching now would repaint both as un-clicked
+        t.watch_next = t.kind;
+        const st = state.titles.find(x => String(x.id) === String(id));
+        if (st) st.watch_next = t.kind;
+        btn.classList.add("primary");
+        btn.textContent = "▶ Watch Next ✓";
         const r = await api(`/api/titles/${id}/watch-next`, { method: "POST" });
+        // watchJob reloads the list itself once the copy job completes
         watchJob(r.job_id, `Watch Next — ${t.title}`);
-        load();
       }
-    } catch (err) { alert(err.message); }
+    } catch (err) {
+      // roll the optimistic confirmation back on failure
+      t.watch_next = null;
+      const st = state.titles.find(x => String(x.id) === String(id));
+      if (st) st.watch_next = null;
+      btn.classList.remove("primary");
+      btn.textContent = "▶ Set Watch Next";
+      alert(err.message);
+    }
   };
   // ---- episode checklist (series) ----
   $("#drawer").dataset.tid = id;
@@ -748,6 +816,12 @@ The move was queued and runs automatically when it is connected (Settings → Dr
       }
     } catch (err) { alert(err.message); }
   };
+  $("#dAnyFolder").onclick = () => openDestPicker(t.title, (target, root) => {
+    const dupNote = t.on_both_drives
+      ? `\n\nThis title is duplicated on BOTH sides — after the move every copy outside the destination is deleted.` : "";
+    if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to ${root}?${dupNote}`)) return;
+    doMove(target, root);
+  });
   $$("#dBody [data-dest]").forEach(b => {
     const { target, root } = b.dataset;
     b.onclick = async () => {
@@ -791,18 +865,43 @@ The move was queued and runs automatically when it is connected (Settings → Dr
         }
       } catch (err) { alert(err.message); }
     };
-    // one destination button per configured root (same list as the drawer)
+    // canonical side buttons stay; every other folder lives in the popup
     api("/api/move-destinations").then(({ destinations: dests }) => {
-      $("#mvDests").innerHTML = dests.map(d =>
-        `<button class="btn mini" data-mvdest data-target="${d.role === "internal" ? "internal" : "external"}" data-root="${esc(d.root)}" title="${esc(d.mounted ? d.root : d.root + " — not connected, move will be queued")}">${esc(destLabel(d.root, d.role))}${d.mounted ? "" : " ⏳"}</button>`
-      ).join("");
-      $$("#mvDests [data-mvdest]").forEach(b => {
-        const { target, root } = b.dataset;
-        b.onclick = () => moveChecked(target, root || null);
+      const byRole = role => dests.find(d => d.role === role);
+      const ext = dests.find(d => d.role === "backup" && d.kind === t.kind)
+        || byRole("backup");
+      const wire = (el, d) => {
+        if (!el || !d) return;
+        el.dataset.target = d.role === "internal" ? "internal" : "external";
+        el.dataset.root = d.root;
+        el.title = d.mounted
+          ? d.root
+          : `${d.root} — not connected, move will be queued`;
+        el.textContent = `${destLabel(d.root, d.role)}${d.mounted ? "" : " ⏳"}`;
+      };
+      wire($("#mvInt"), byRole("internal"));
+      wire($("#mvExt"), ext);
+      $$("#mvDests [data-target]").forEach(b => {
+        b.onclick = () => moveChecked(b.dataset.target, b.dataset.root || null);
       });
     }).catch(() => {
       $("#mvInt").onclick = () => moveChecked("internal");
       $("#mvExt").onclick = () => moveChecked("external");
+    });
+    // season picker can also target ANY configured folder, full paths —
+    // created once, but re-bound on every drawer open (t is per-open)
+    let dAnySeasons = $("#mvDests [data-anyfolder]");
+    if (!dAnySeasons) {
+      dAnySeasons = document.createElement("button");
+      dAnySeasons.className = "btn mini";
+      dAnySeasons.dataset.anyfolder = "1";
+      dAnySeasons.textContent = "📁 Other folder…";
+      dAnySeasons.title = "Pick ANY configured folder — full paths, including other library folders on the same drive";
+      $("#mvDests").appendChild(dAnySeasons);
+    }
+    dAnySeasons.onclick = () => openDestPicker(t.title, (target, root) => {
+      if (!confirm(`Move checked season(s) of "${t.title}" to ${root}? Unticked seasons stay where they are.`)) return;
+      moveChecked(target, root);
     });
     dSeasons.onclick = () => $("#mvModal").classList.remove("hidden");
   }
@@ -885,6 +984,10 @@ $("#dClose").onclick = () => $("#drawer").classList.remove("open");
 $("#mvClose").onclick = () => $("#mvModal").classList.add("hidden");
 $("#mvModal").addEventListener("click", e => {
   if (e.target === $("#mvModal")) $("#mvModal").classList.add("hidden");
+});
+$("#dmClose").onclick = () => $("#destModal").classList.add("hidden");
+$("#destModal").addEventListener("click", e => {
+  if (e.target === $("#destModal")) $("#destModal").classList.add("hidden");
 });
 
 /* ---------- settings ---------- */

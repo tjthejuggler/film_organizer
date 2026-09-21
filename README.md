@@ -37,6 +37,18 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-21** — **Move to ANY configured folder — even on the same drive**: the drawer's
+  "Move to:" row keeps its 💻 Internal / 🔌 External buttons and adds "📁 Other folder…",
+  a popup listing EVERY destination with its full path — internal, per-kind backups, liked
+  drives AND the scanned library roots (so ~/Videos → ~/Downloads works now). Offline
+  destinations are marked and the move gets queued until the drive connects. The
+  season-picker modal got the same popup. Picking a folder consolidates: copies outside
+  the chosen folder are removed (liked-drive backups stay protected).
+- **2026-09-20** — **Watch Next button confirms your click instantly**: the row ▶ button
+  (and the drawer's "Watch Next" button) now colors/labels itself as pinned the moment
+  you click it, instead of staying grey until the background copy job finishes. If the
+  pin fails (e.g. a drive is offline), the visual state rolls back and the error explains
+  what to connect.
 - **2026-09-20** — **move ANY title to ANY configured destination**: the drawer's "Move to:"
   row used to offer only Internal/External (seasons-only granularity for series). Now it
   renders one button per configured root from the new

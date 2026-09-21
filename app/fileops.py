@@ -64,13 +64,15 @@ def liked_root(kind: str) -> str:
 
 def move_destinations() -> list:
     """Every configured move destination, deduplicated, for the drawer's
-    'Move to' buttons: internal storage plus the per-kind regular backups
-    and liked drives (the legacy external_root drive shows up through the
-    Movies//Series/ subfolder layout regular_root resolves it to)."""
+    'Move to' buttons: internal storage, the per-kind regular backups and
+    liked drives (the legacy external_root drive shows up through the
+    Movies//Series/ subfolder layout regular_root resolves it to) AND the
+    scanned library roots — so a title can also be moved from one library
+    folder to another, even on the same drive (~/Videos -> ~/Downloads)."""
     out: list = []
     seen: set = set()
 
-    def add(root, role, kind=None):
+    def add(root, role, kind=None, label=None):
         if not root:
             return
         root = os.path.abspath(root)
@@ -78,12 +80,15 @@ def move_destinations() -> list:
             return
         seen.add(root)
         out.append({"root": root, "role": role, "kind": kind,
-                    "mounted": os.path.isdir(root)})
+                    "label": label, "mounted": os.path.isdir(root)})
 
     add(db.settings_get("internal_root"), "internal")
     for kind in ("movie", "series"):
         add(regular_root(kind), "backup", kind)
         add(liked_root(kind), "liked", kind)
+    # scanned library roots: same-drive moves need these as destinations
+    for r in db.q("SELECT path, label FROM roots WHERE enabled=1 ORDER BY path"):
+        add(r["path"], "library", None, r["label"])
     return out
 
 
