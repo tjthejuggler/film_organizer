@@ -37,6 +37,23 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-22** — **Codebase reorganized for faster AI-assisted edits**: the two
+  god-files were split along feature lines —
+  * Backend: [`app/main.py`](app/main.py) went from 1,809 lines (70+ routes,
+    models, helpers and an inline HTML page in one file) to a 128-line
+    composition root; routes now live in `app/routers/` — one APIRouter module
+    per domain ([`titles.py`](app/routers/titles.py), [`history.py`](app/routers/history.py),
+    [`storage.py`](app/routers/storage.py), [`recommendations.py`](app/routers/recommendations.py),
+    …) with shared row-shaping helpers in [`common.py`](app/routers/common.py).
+    Verified: all 74 routes byte-identical via OpenAPI diff; live smoke test
+    passed (list/settings/stats/browse/SSE).
+  * Frontend: the old monolithic `static/app.js` (1,999 lines) became 21 ES
+    modules under `static/js/` ([`list.js`](static/js/list.js),
+    [`drawer.js`](static/js/drawer.js), [`settings.js`](static/js/settings.js),
+    …) loaded via `<script type="module">` from [`main.js`](static/js/main.js);
+    every import specifier and every `$("#id")` reference machine-verified.
+    Zero behavior changes — this is a pure mechanical reorganization so future
+    edits touch a 100–500-line file instead of a 2,000-line one.
 - **2026-09-21** — **Move to ANY configured folder — even on the same drive**: the drawer's
   "Move to:" row keeps its 💻 Internal / 🔌 External buttons and adds "📁 Other folder…",
   a popup listing EVERY destination with its full path — internal, per-kind backups, liked
