@@ -47,7 +47,8 @@ def src_base(path: str):
 def move_title(job_id: str, title_id: int, target: str,
                purge_others: bool = False,
                seasons: Optional[List[int]] = None,
-               dest_root: Optional[str] = None):
+               dest_root: Optional[str] = None,
+               purge_roots: Optional[List[str]] = None):
     """Move a title to the 'internal' or 'external' side.
 
     purge_others=True upgrades the move to a CONSOLIDATION (the drawer's
@@ -55,6 +56,13 @@ def move_title(job_id: str, title_id: int, target: str,
     still sit on the other side are deleted, so it ends up in exactly one
     place. Backup-style callers (notifications, queued moves without the
     flag) keep the copy-preserving semantics.
+
+    purge_roots: EXPLICIT list of source places to clean after the move
+    (drive/library roots, from the move dialog's 'remove from' checklist).
+    When given it REPLACES the automatic other-side derivation: only
+    copies under these roots are purged (liked drives stay protected),
+    and purge_others is implied. None keeps the classic behaviour: purge
+    the whole opposite side when purge_others is set.
 
     seasons (series): move only these seasons; None moves everything.
     A partial-season move is always FILE-BY-FILE — a release folder that
@@ -143,6 +151,12 @@ def move_title(job_id: str, title_id: int, target: str,
                  if not (os.path.abspath(f["path"]) + os.sep).startswith(lk)]
         if not files:
             raise ValueError("Only liked-drive copies exist — nothing to move")
+    # The ACTIVE Watch Next pin's staging slot participates in moves like
+    # any other copy (standard move semantics — the user decides with the
+    # pin button, not by working around a protected folder): it can be
+    # moved to the destination like everything else, and _purge_leftovers
+    # clears it when the title already lives at the destination. The pin
+    # itself is dropped once its slot copy is gone (see below).
     if seasons:
         # partial move: keep only episodes of the chosen seasons (a file
         # without a parsed season counts as season 1, like the drawer UI)
@@ -241,6 +255,7 @@ def move_title(job_id: str, title_id: int, target: str,
         # belongs — leave it exactly where it is, do not re-home it into the
         # canonical kind folder (its real layout may differ, e.g. aaSeries/)
         if purge_others and _on_target_drive(src):
+            log(job_id, f"SKIP (already on the destination drive): {src}")
             skipped += 1
             return
         # twin of a file already on the target drive -> not moved; the
@@ -281,6 +296,7 @@ def move_title(job_id: str, title_id: int, target: str,
 
     for (folder, base), fs in folders.items():
         if purge_others and _on_target_drive(folder):
+            log(job_id, f"SKIP (already on the destination drive): {folder}")
             skipped += len(fs)  # already on the target drive — leave in place
             continue
         if purge_others and any(_dedupe_key(f) in target_keys for f in fs):
@@ -348,12 +364,41 @@ def move_title(job_id: str, title_id: int, target: str,
     # the move loop (never deleted) — a duplicated title would otherwise end
     # up with two copies on the target and the old one on the source drive.
     # Liked-drive copies are always protected (keep_roots): consolidating
-    # must never destroy a favorite's secondary backup place.
+    # must never destroy a favorite's secondary backup place. Everything
+    # else goes — INCLUDING the active Watch Next pin's staging copy
+    # (standard move semantics; the pin is dropped below once its copy
+    # is gone) — unless the user picked the exact places to clear via
+    # purge_roots, in which case ONLY those places go.
+    # ALSO runs when nothing was moved at all: a move request for files
+    # that ALREADY live at the destination must still clear the requested
+    # source places (the user asked 'move it here', not 'copy it here'),
+    # otherwise the job ends '0 moved, N skipped' and the old copies
+    # linger forever.
     keep_roots = [fileops.liked_root(title["kind"])] \
         if fileops.liked_root(title["kind"]) else []
+    explicit = [os.path.abspath(r) for r in (purge_roots or [])]
     purged = _purge_leftovers(job_id, title_id, target,
                               seasons=seasons,
-                              keep_roots=keep_roots) if purge_others else 0
+                              keep_roots=keep_roots,
+                              only_roots=explicit or None) \
+        if (purge_others or moved == 0 or explicit) else 0
+
+    # a Watch Next pin whose staging copy was consumed by this move (moved
+    # away or purged) points at an empty slot — drop it so the UI stops
+    # advertising a title that is no longer staged
+    if title["watch_next"] == title["kind"]:
+        from . import watchnext
+        try:
+            slot = watchnext.slot_dir(title["kind"])
+            left = q1("SELECT COUNT(*) n FROM files WHERE title_id=? AND "
+                      "missing=0 AND (path = ? OR path LIKE ?)",
+                      (title_id, slot, slot.rstrip(os.sep) + os.sep + "%"))["n"]
+            if not left:
+                watchnext.clear_next(title_id)
+                log(job_id, "Watch Next pin dropped — its staged copy "
+                            "moved with the title")
+        except ValueError:
+            pass
 
     tail = f", {purged} leftover(s) removed" if purged else ""
     log(job_id, f"Move complete: {moved} moved, {skipped} skipped{tail}")
@@ -362,7 +407,8 @@ def move_title(job_id: str, title_id: int, target: str,
 
 def _purge_leftovers(job_id: str, title_id: int, target: str,
                      seasons: Optional[List[int]] = None,
-                     keep_roots: Optional[List[str]] = None) -> int:
+                     keep_roots: Optional[List[str]] = None,
+                     only_roots: Optional[List[str]] = None) -> int:
     """Delete copies of the title that STILL sit outside the target side.
 
     Only physically present files on known, connected roots are touched —
@@ -373,6 +419,12 @@ def _purge_leftovers(job_id: str, title_id: int, target: str,
     the selected seasons are purged. Copies under any root in
     `keep_roots` (the liked drives) are NEVER purged: consolidating a
     favorite must not destroy its secondary backup.
+
+    only_roots narrows the purge to copies under THESE roots (absolute
+    paths, from the move dialog's 'remove from' checklist). When given,
+    the classic other-side derivation is skipped entirely: only the
+    places the user explicitly ticked go — an unticked place keeps its
+    copy.
     """
     from . import duplicates
     from .jobs import log
@@ -381,10 +433,12 @@ def _purge_leftovers(job_id: str, title_id: int, target: str,
                     (fileops.all_backup_roots() if target == "external" else
                      [fileops.regular_root(k) for k in ("movie", "series")])
                     if r]
-    if target == "external" and not backup_roots:
+    if target == "external" and not backup_roots and not only_roots:
         return 0  # no backup destination configured -> no 'other side'
     keep = [os.path.abspath(r).rstrip(os.sep) + os.sep
             for r in (keep_roots or [])]
+    only = [os.path.abspath(r).rstrip(os.sep) + os.sep
+            for r in (only_roots or [])]
 
     def _side(p: str) -> str:
         ap = os.path.abspath(p) + os.sep
@@ -394,6 +448,10 @@ def _purge_leftovers(job_id: str, title_id: int, target: str,
         return "internal" if not any(ap.startswith(r.rstrip(os.sep) + os.sep)
                                      for r in backup_roots) else "external"
 
+    def _in_only(p: str) -> bool:
+        ap = os.path.abspath(p) + os.sep
+        return any(ap.startswith(r) for r in only) if only else True
+
     doomed = []
     for f in q("SELECT * FROM files WHERE title_id=? AND missing=0", (title_id,)):
         if seasons is not None and \
@@ -402,7 +460,9 @@ def _purge_leftovers(job_id: str, title_id: int, target: str,
         ap = os.path.abspath(f["path"]) + os.sep
         if any(ap.startswith(r) for r in keep):
             continue  # a liked drive copy is protected — never consolidated away
-        if _side(f["path"]) == target:
+        if not _in_only(f["path"]):
+            continue  # user kept this place — its copy stays
+        if only_roots is None and _side(f["path"]) == target:
             continue  # this copy already lives where the user asked
         base = src_base(f["path"])
         if not base or not os.path.isdir(base):

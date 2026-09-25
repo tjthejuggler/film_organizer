@@ -263,6 +263,22 @@
   </div>
 </div>
 
+<!-- 'remove from which places?' step of the move flow (multi-copy titles) -->
+<div id="srcModal" class="modal hidden">
+  <div class="sheet delsheet">
+    <div class="shead"><h2>Remove <span id="srcName"></span> from…</h2><button class="btn ghost" id="srcClose">✕</button></div>
+    <p class="hint">This title (or the ticked seasons) exists in several places. Untick any place whose
+      copy you want to <b>keep</b> — everything ticked is removed after the move lands. The destination
+      drive is never listed: its copy is the one the move creates.</p>
+    <div id="srcList" class="mvlist"></div>
+    <div class="sfoot mvactions">
+      <button class="btn mini ghost" id="srcAll" title="Tick every place (standard move)">all</button>
+      <button class="btn mini ghost" id="srcNone" title="Keep every copy (pure copy, nothing removed)">none</button>
+      <button class="btn mini" id="srcGo" style="margin-left:auto">Move</button>
+    </div>
+  </div>
+</div>
+
 <!-- watched-history modal -->
 <div id="histModal" class="modal hidden">
   <div class="sheet">

@@ -105,13 +105,19 @@ def pending_count() -> int:
 
 def _offline_backup_roots(title_id: int) -> set:
     """Which of this title's backup destinations are currently not mounted.
-    The move target is the title's regular per-kind backup root; a liked
-    title also needs its liked drive. Empty set = everything accessible."""
-    t = q1("SELECT kind FROM titles WHERE id=?", (title_id,))
+    The move target is the title's regular per-kind backup root; a LIKED
+    title also needs its liked drive (favorites get a two-place backup).
+    Everyone else needs just the regular root — demanding the liked drive
+    from non-favorites queued backups behind an unrelated disk. Empty
+    set = everything accessible."""
+    t = q1("SELECT kind, favorite FROM titles WHERE id=?", (title_id,))
     if not t:
         return set()
-    roots = {r for r in (fileops.regular_root(t["kind"]),
-                         fileops.liked_root(t["kind"])) if r}
+    roots = {fileops.regular_root(t["kind"])}
+    if t["favorite"]:
+        roots.add(fileops.liked_root(t["kind"]))
+    roots.discard(None)
+    roots = {r for r in roots if r}
     # dedupe nested roots (keep the longest): a liked folder inside the
     # regular drive would otherwise name the same device twice
     roots = {r for r in roots

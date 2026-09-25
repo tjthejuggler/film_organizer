@@ -13,8 +13,14 @@ Entry kinds and their payloads (JSON):
   delete_copy {"root": str, "drives": [root, ...]}
 
 `drive` is the PRIMARY drive the entry waits for (used for grouping in the
-Settings UI); `payload.drives`, when present, lists ALL drives that must be
-connected before the entry may run.
+Settings UI). Gate rules per kind:
+  move        waits for its DESTINATION only (payload.dest_root, or the
+              configured internal/per-kind backup root); the drives its
+              FILES sit on — and, for favorites, the liked drive — are
+              extra readiness checks (_move_blockers), so a stale
+              payload list can never demand unrelated drives
+  delete      {"drives"} lists every drive the deletion touches
+  delete_copy {"drives"} likewise
 """
 import json
 import os
@@ -23,7 +29,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import db, jobs
+from . import db, fileops, jobs
 from .db import q, q1, tx
 
 # Only one queue runner at a time; the SSE hook and the poller may race.
@@ -76,11 +82,17 @@ def cancel(qid: int):
 # ---- listing ---------------------------------------------------------------
 
 def list_pending() -> list:
-    """Pending entries grouped by (primary) drive, for the Settings UI.
+    """Queue entries grouped by (primary) drive, for the Settings UI.
+
+    RUNNING entries are listed too: a previous version kept them out, so
+    a long move (or its liked-copy top-up) made the whole queue look idle
+    — items said 'will run now' while the single-lane runner was in fact
+    busy and everything behind it starved. Seeing the running entry
+    explains the wait instead of hiding it.
 
     Each item carries the FULL list of drives it waits for plus which of
-    them are missing: an entry is gated on all of payload.drives, not just
-    the group's primary drive — showing only 'connected' for the primary
+    them are missing: an entry is gated on its destination (moves) or all
+    of payload.drives (deletes) — showing only 'connected' for the primary
     drive made the queue claim 'will run now' while it silently waited for
     a different, unplugged drive."""
     rows = q(
@@ -88,7 +100,7 @@ def list_pending() -> list:
                   d.status, d.last_error, d.payload, d.attempts,
                   t.title AS title_name
            FROM drive_queue d LEFT JOIN titles t ON t.id = d.title_id
-           WHERE d.status IN ('pending','error') ORDER BY d.drive, d.id""")
+           WHERE d.status IN ('pending','running','error') ORDER BY d.drive, d.id""")
     groups: dict = {}
     for r in rows:
         g = groups.setdefault(r["drive"], {
@@ -98,15 +110,20 @@ def list_pending() -> list:
             payload = json.loads(r["payload"] or "{}")
         except ValueError:
             payload = {}
-        drives = payload.get("drives") or [r["drive"]]
-        missing = [d for d in drives if not os.path.isdir(d)]
-        # queued moves additionally need every drive their FILES sit on
-        # (plus the liked-copy drive when backing up) — mirror the gate the
-        # runner applies so the UI shows exactly what to plug in instead of
-        # claiming "will run now" over a move that would instantly fail
+        # moves are gated on their DESTINATION (plus the extra checks the
+        # runner applies — source drives, favorites' liked drive); for the
+        # delete kinds payload.drives lists the affected drives. A stale
+        # payload.drives on a move must NOT widen the gate: entries queued
+        # before the per-destination fix demanded unrelated drives (the
+        # liked drive for plain backups), freezing the queue forever.
         if r["kind"] == "move":
+            drives = _move_gate_roots(dict(r), payload)
+            missing = [d for d in drives if not os.path.isdir(d)]
             missing += [b for b in _move_blockers(dict(r), payload)
                         if b not in missing]
+        else:
+            drives = payload.get("drives") or [r["drive"]]
+            missing = [d for d in drives if not os.path.isdir(d)]
         attempts = r["attempts"] or 0
         g["items"].append({
             "id": r["id"], "kind": r["kind"], "title_id": r["title_id"],
@@ -131,6 +148,13 @@ def _entry_drives(entry, payload: dict) -> list:
 
 
 def _ready(entry, payload: dict) -> bool:
+    """Primary gate. Moves gate on their RESOLVED DESTINATION only (never
+    on a possibly stale payload.drives from before the per-destination
+    fix — those lists demanded unrelated drives and froze the queue);
+    the delete kinds keep their explicit drive lists."""
+    if entry["kind"] == "move":
+        return all(os.path.isdir(d)
+                   for d in _move_gate_roots(entry, payload))
     return all(os.path.isdir(d) for d in _entry_drives(entry, payload))
 
 
@@ -156,44 +180,78 @@ def _drive_root_of(path: str):
     return None
 
 
+def _move_gate_roots(entry, payload: dict) -> list:
+    """The drives a queued MOVE actually waits for: its destination only.
+
+    The destination is resolved exactly like the runner will resolve it
+    at execution time (dest_root override, else the kind's backup root
+    for 'external', else internal_root) so the UI gate can never disagree
+    with the runner. Source drives / favorites' liked drives are extra
+    blockers (_move_blockers), NOT gate members — being strict there
+    turned 'plug in the drive you move TO' into 'plug in everything'."""
+    dr = payload.get("dest_root")
+    if dr:
+        return [os.path.abspath(dr)]
+    if (payload.get("target") or "external") == "external":
+        t = q1("SELECT kind FROM titles WHERE id=?", (entry["title_id"],))
+        dest = fileops.regular_root(t["kind"]) if t else ""
+        return [os.path.abspath(dest)] if dest else []
+    internal = db.settings_get("internal_root")
+    return [os.path.abspath(internal)] if internal else []
+
+
 def _move_blockers(entry, payload: dict) -> list:
     """Extra readiness checks for queued MOVES beyond the destination
     gate (`_ready`). Returns human-readable blockers; empty = good to run.
 
-    payload.drives lists only DESTINATION drives, so a move whose files
-    sit on an unplugged drive used to fire the moment the destination
-    connected — and burn its whole retry budget (5 fails in ~4 minutes)
-    on 'system move failed or was cancelled'. Two holes, both closed:
-      - source drives: every drive root holding the title's cataloged
-        files must be mounted before the move may run;
-      - the liked-copy drive: target=external tops the fresh backup up
-        on the title's liked drive afterwards (liked.sync_liked_copy),
-        so that drive must be mounted too or the move fails post-copy.
+    A move whose files sit on an unplugged drive used to fire the moment
+    the destination connected — and burn its whole retry budget (5 fails
+    in ~4 minutes) on 'system move failed or was cancelled'. Holes closed:
+      - source drives: every drive root holding the files this move
+        actually relocates (season filter respected) must be mounted;
+      - the liked-copy drive: ONLY for favorites — target=external tops
+        the fresh backup up on the liked drive afterwards
+        (liked.sync_liked_copy), and that step fails on an unmounted
+        drive. For everybody else sync_liked_copy is a no-op, so demanding
+        the liked drive here froze plain backups behind an unrelated disk
+        (the SSK 'plug in this drive too' bug).
     """
     if entry["kind"] != "move":
         return []
     blocked: list = []
-    for r in q("SELECT path FROM files WHERE title_id=?", (entry["title_id"],)):
+
+    seasons = payload.get("seasons") or None
+    want = set(seasons) if seasons else None
+    for r in q("SELECT season, path FROM files WHERE title_id=? AND missing=0",
+               (entry["title_id"],)):
+        if want is not None and (r["season"] if r["season"] is not None
+                                 else 1) not in want:
+            continue  # this move leaves that season's drive untouched
         drv = _drive_root_of(r["path"])
         if drv and drv not in blocked and not os.path.isdir(drv):
             blocked.append(drv)
-    # a dest_root override that is NOT under any backup root lands on
-    # internal storage — its liked top-up step never runs
-    from . import fileops
+
+    # does the landed copy get topped up on a liked drive afterwards?
+    # (only moves landing under a backup root do — internal destinations
+    # skip the top-up entirely)
     dr = payload.get("dest_root")
-    on_backup = False
+    lands_backup = False
     if dr:
         dr = os.path.abspath(dr)
-        on_backup = any((dr + os.sep).startswith(r.rstrip(os.sep) + os.sep)
-                        for r in fileops.all_backup_roots())
-    t = q1("SELECT kind FROM titles WHERE id=?", (entry["title_id"],))
-    if t and (on_backup or (not dr and
-                            (payload.get("target") or "external") == "external")):
-        lr = fileops.liked_root(t["kind"])
-        if lr:
-            lr = os.path.abspath(lr)
-            if not os.path.isdir(lr) and lr not in blocked:
-                blocked.append(lr + " (liked copy)")
+        lands_backup = any(
+            (dr + os.sep).startswith(r.rstrip(os.sep) + os.sep)
+            for r in fileops.all_backup_roots())
+    else:
+        lands_backup = (payload.get("target") or "external") == "external"
+    if lands_backup:
+        t = q1("SELECT kind, favorite FROM titles WHERE id=?",
+               (entry["title_id"],))
+        if t and t["favorite"]:
+            lr = fileops.liked_root(t["kind"])
+            if lr:
+                lr = os.path.abspath(lr)
+                if not os.path.isdir(lr) and lr not in blocked:
+                    blocked.append(lr + " (liked copy)")
     return blocked
 
 
@@ -285,22 +343,29 @@ def _execute(entry, payload: dict):
             mover.move_title(jid, entry["title_id"], target,
                              purge_others=bool(payload.get("purge_others")),
                              seasons=payload.get("seasons") or None,
-                             dest_root=dr)
+                             dest_root=dr,
+                             purge_roots=payload.get("purge_roots") or None)
             # favorites keep a second copy on their liked drive: top it up
             # after the regular backup lands (no-op for non-liked titles,
             # kinds without a liked folder configured, or dest_root moves
-            # landing on internal storage)
+            # landing on internal storage). OFF the queue lane: syncing a
+            # whole series to the liked drive can take many minutes, and a
+            # previous top-up done inline held the single-lane runner so
+            # every later entry starved with 'will run now' showing.
             tops_backup = target == "external"
             if dr:
                 dr = os.path.abspath(dr)
                 tops_backup = any(
                     (dr + os.sep).startswith(r.rstrip(os.sep) + os.sep)
                     for r in fileops.all_backup_roots())
-            if tops_backup:
+            if tops_backup and q1(
+                    "SELECT favorite FROM titles WHERE id=?",
+                    (entry["title_id"],))["favorite"]:
                 from . import liked
-                liked.sync_liked_copy(
-                    title_id=entry["title_id"],
-                    log=lambda m: jobs.log(jid, m))
+                threading.Thread(
+                    target=_liked_topup,
+                    args=(entry["title_id"], jid),
+                    daemon=True).start()
         elif entry["kind"] == "delete":
             _run_delete(entry, payload, jid)
         elif entry["kind"] == "delete_copy":
@@ -334,6 +399,30 @@ def _execute(entry, payload: dict):
         with tx() as c:
             c.execute("UPDATE notifications SET status='done', decided_at=? "
                       "WHERE id=? AND status='queued'", (_now(), nid))
+
+
+def _liked_topup(title_id: int, jid: str):
+    """Background liked-copy top-up for a finished queued backup move.
+    Runs OUTSIDE the queue runner so a slow copy to the liked drive can
+    never starve other queued entries; failures are logged, not fatal —
+    the next backup move (or a scan) retries the top-up anyway."""
+    from . import liked
+    try:
+        liked.sync_liked_copy(title_id=title_id,
+                              log=lambda m: jobs.log(jid, m))
+    except Exception as e:
+        jobs.log(jid, f"liked-copy top-up failed (will retry on the next "
+                      f"backup): {e}")
+
+
+def _reap_orphans() -> int:
+    """Boot-time data repair for entries stuck in 'running' (app killed or
+    crashed mid-move): they are re-pended so the worker can retry them —
+    and so they show up in the queue UI instead of silently vanishing."""
+    with tx() as c:
+        cur = c.execute(
+            "UPDATE drive_queue SET status='pending' WHERE status='running'")
+        return cur.rowcount
 
 
 def _run_delete(entry, payload: dict, jid: str):
@@ -397,8 +486,11 @@ def repost_errors() -> int:
     source-aware gate existed) are indistinguishable from fresh failures,
     and the gate now keeps drive-blocked entries parked, so a fresh boot is
     the right moment for one more honest chance. Mid-session failures still
-    park after MAX_ATTEMPTS — the worker never reposts while running."""
+    park after MAX_ATTEMPTS — the worker never reposts while running.
+    'running' strays (crash mid-move) are re-pended too."""
     with tx() as c:
+        c.execute(
+            "UPDATE drive_queue SET status='pending' WHERE status='running'")
         cur = c.execute(
             "UPDATE drive_queue SET status='pending', ran_at=NULL, attempts=0 "
             "WHERE status='error'")

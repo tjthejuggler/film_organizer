@@ -6,6 +6,7 @@ import { load, renderRows, searchPerson } from "./list.js";
 import { esc, imgTag, rtTier, fmtSize, fmtDate } from "./format.js";
 import { watchJob } from "./jobs.js";
 import { openDestPicker } from "./destpicker.js";
+import { openSrcPicker } from "./srcpicker.js";
 
 // friendly label for a move destination (drawer buttons, toasts, confirm)
 function destLabel(root, target) {
@@ -243,9 +244,10 @@ export async function openDrawer(id) {
       updateEpProgress(r);
     } catch (err) { alert(err.message); }
   };
-  const doMove = async (target, destRoot) => {
+  const doMove = async (target, destRoot, purgeRoots) => {
     const body = { target, purge_others: true };
     if (destRoot) body.dest_root = destRoot;
+    if (purgeRoots) body.purge_roots = purgeRoots;
     try {
       const r = await api(`/api/titles/${id}/move`, { method: "POST", body });
       if (r.queued) {
@@ -256,19 +258,22 @@ The move was queued and runs automatically when it is connected (Settings → Dr
       }
     } catch (err) { alert(err.message); }
   };
+  // a multi-copy title gets the 'remove from which places?' step before
+  // the move fires; single-copy titles move without the extra popup
+  const moveFlow = (target, destRoot, sel) => {
+    openSrcPicker(t.title, id, sel, destRoot, purgeRoots => {
+      doMove(target, destRoot, purgeRoots);
+    });
+  };
   $("#dAnyFolder").onclick = () => openDestPicker(t.title, (target, root) => {
-    const dupNote = t.on_both_drives
-      ? `\n\nThis title is duplicated on BOTH sides — after the move every copy outside the destination is deleted.` : "";
-    if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to ${root}?${dupNote}`)) return;
-    doMove(target, root);
+    if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to ${root}?`)) return;
+    moveFlow(target, root, null);
   });
   $$("#dBody [data-dest]").forEach(b => {
     const { target, root } = b.dataset;
     b.onclick = async () => {
-      const dupNote = t.on_both_drives
-        ? `\n\nThis title is duplicated on BOTH sides — after the move every copy outside the destination is deleted.` : "";
-      if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to ${destLabel(root, target)}?${dupNote}`)) return;
-      await doMove(target, root || null);
+      if (!confirm(`Move "${t.title}" (${t.files.length} file(s)) to ${destLabel(root, target)}?`)) return;
+      moveFlow(target, root || null, null);
     };
   });
 
@@ -291,19 +296,9 @@ The move was queued and runs automatically when it is connected (Settings → Dr
     const moveChecked = async (target, destRoot) => {
       const sel = $$("#mvList input:checked").map(i => Number(i.dataset.season));
       if (!sel.length) { alert("Tick at least one season to move."); return; }
-      const body = { target, purge_others: true, seasons: sel };
-      if (destRoot) body.dest_root = destRoot;
       if (!confirm(`Move season(s) ${sel.join(", ")} of "${t.title}" to ${destLabel(destRoot, target)}? Unticked seasons stay where they are.`)) return;
-      try {
-        const r = await api(`/api/titles/${id}/move`, { method: "POST", body });
-        $("#mvModal").classList.add("hidden");
-        if (r.queued) {
-          alert(`The destination drive (${r.drive}) is not connected right now.
-The move was queued and runs automatically when it is connected (Settings → Drive queues).`);
-        } else {
-          watchJob(r.job_id, `Move S${sel.join(",S")} → ${destLabel(destRoot, target)}`);
-        }
-      } catch (err) { alert(err.message); }
+      $("#mvModal").classList.add("hidden");
+      moveFlow(target, destRoot, sel);
     };
     // canonical side buttons stay; every other folder lives in the popup
     api("/api/move-destinations").then(({ destinations: dests }) => {
@@ -340,8 +335,11 @@ The move was queued and runs automatically when it is connected (Settings → Dr
       $("#mvDests").appendChild(dAnySeasons);
     }
     dAnySeasons.onclick = () => openDestPicker(t.title, (target, root) => {
+      const sel = $$("#mvList input:checked").map(i => Number(i.dataset.season));
+      if (!sel.length) { alert("Tick at least one season to move."); return; }
       if (!confirm(`Move checked season(s) of "${t.title}" to ${root}? Unticked seasons stay where they are.`)) return;
-      moveChecked(target, root);
+      $("#mvModal").classList.add("hidden");
+      moveFlow(target, root, sel);
     });
     dSeasons.onclick = () => $("#mvModal").classList.remove("hidden");
   }

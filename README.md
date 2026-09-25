@@ -37,6 +37,65 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-24 (later)** — **Move/consolidate correctness fixes** after the
+  'Top of the Lake already on the T5' follow-up:
+  * **Catalog poisoning fixed** ([`watchnext.py`](app/watchnext.py)): the Watch
+    Next slot INSERT had 11 columns but 10 values, so every slot copy row got
+    `missing=<timestamp>` (poisoned) instead of `missing=0` — the app went
+    blind to physically present copies. Existing poisoned rows were repaired
+    (13).
+  * **'Already there' moves now clear the source** ([`mover.py`](app/mover.py)):
+    a consolidation move that ends '0 moved, N skipped' (everything already at
+    the destination) still runs the leftover purge, so copies on the other
+    side are removed — 'move' means move, not copy. Skip reasons are logged
+    per file.
+  * The empty `Season 2` folder the cancelled 15:29 KIO move left on the T5
+    was removed; Season 2's files are safe on the (currently unplugged) X10.
+
+- **2026-09-25** — **Move dialog asks which copies to remove**. When a title
+  (or the ticked seasons) exists in more than one place, the move flow now
+  shows a 'Remove <title> from…' step ([`static/js/srcpicker.js`](static/js/srcpicker.js))
+  listing every place that currently holds a live copy (new
+  [`GET /api/titles/{tid}/copy-locations`](app/routers/storage.py), file
+  counts + mount state). Everything is ticked by default (standard move);
+  untick a place to KEEP its copy — the move API takes the chosen places as
+  `purge_roots` ([`MoveIn`](app/routers/storage.py)), and
+  [`mover._purge_leftovers`](app/mover.py) then clears only those places
+  (liked drives stay protected; a Watch Next pin whose staged copy is
+  consumed is dropped automatically). Queued moves carry `purge_roots`
+  through the drive queue, so the choice survives a 'drive not connected'
+  queueing. Single-copy titles skip the popup entirely.
+
+- **2026-09-24 (final)** — **True standard move semantics**: the active Watch
+  Next pin's staging copy (`aaNext_*`) is no longer protected from
+  consolidation ([`mover.py`](app/mover.py)). Moving a title to a drive
+  where it already lives now removes the local/staging copy too — 'move'
+  means move. When the staged copy is consumed by such a move, the pin is
+  dropped automatically (it pointed at an emptied slot) with a log line.
+  Only liked drives stay protected (a favorite's second backup place).
+
+- **2026-09-24** — **Drive queue: plug in only the drive you move to**. Three
+  fixes after a queued 'Top of the Lake → T5' move demanded every other drive
+  AND refused to start once they were all plugged in:
+  * Moves now gate on their DESTINATION only ([`_move_gate_roots`](app/drivequeue.py)):
+    a stale `payload.drives` from before the per-destination fix can no longer
+    demand unrelated drives, and the runner resolves the destination exactly
+    like the UI gate does. Extra readiness checks stay, but scoped: source
+    drives of the moved seasons only, and the liked drive ONLY for favorites
+    (non-favorites' liked top-up is a no-op, so demanding that drive froze
+    plain backups — the 'plug in the SSK too' bug).
+  * The favorites' liked-copy top-up now runs OFF the queue lane
+    ([`_liked_topup`](app/drivequeue.py)): a previous inline top-up copied a
+    whole series to the SSK drive while holding the single-lane runner, so
+    every later entry starved with 'will run now' showing — the 'all drives
+    plugged in and it still isn't moving' bug. The queue UI also lists
+    RUNNING entries (▶ badge) instead of hiding them, so the lane can no
+    longer look idle while it is busy.
+  * Boot repair re-pends entries stuck in 'running' after a crash
+    ([`repost_errors`](app/drivequeue.py)); notification-accept's offline
+    check ([`notifications.py`](app/notifications.py)) now also requires the
+    liked drive for favorites only.
+
 - **2026-09-22** — **Codebase reorganized for faster AI-assisted edits**: the two
   god-files were split along feature lines —
   * Backend: [`app/main.py`](app/main.py) went from 1,809 lines (70+ routes,

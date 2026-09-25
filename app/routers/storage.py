@@ -17,6 +17,7 @@ class MoveIn(BaseModel):
     dest_root: Optional[str] = None  # explicit destination folder (Move to list)
     purge_others: bool = False  # consolidation: also delete copies on the other side
     seasons: Optional[List[int]] = None  # series: move only these seasons (None = all)
+    purge_roots: Optional[List[str]] = None  # exact places to remove the copy from
 
 
 # ---- move between internal / external storage -----------------------------
@@ -54,7 +55,8 @@ def move_title(tid: int, body: MoveIn):
         qid, created = drivequeue.enqueue(
             "move", tid, dest,
             {"target": body.target, "dest_root": dest,
-             "purge_others": body.purge_others, "seasons": seasons},
+             "purge_others": body.purge_others, "seasons": seasons,
+             "purge_roots": body.purge_roots},
             f"Move '{row['title']}' to {dest}{sel}")
         return {"job_id": None, "queued": True, "queue_id": qid,
                 "queued_now": created, "drive": dest}
@@ -66,7 +68,8 @@ def move_title(tid: int, body: MoveIn):
         try:
             mover.move_title(job, tid, body.target,
                              purge_others=body.purge_others, seasons=seasons,
-                             dest_root=body.dest_root)
+                             dest_root=body.dest_root,
+                             purge_roots=body.purge_roots)
             lut_sync.request_sync("move")   # voice fast-path follows the file
         except Exception as e:
             jobs.log(job, f"FAILED: {e}")
@@ -75,6 +78,47 @@ def move_title(tid: int, body: MoveIn):
 
     threading.Thread(target=_run, args=(jid,), daemon=True).start()
     return {"job_id": jid}
+
+
+@router.get("/api/titles/{tid}/copy-locations")
+def copy_locations(tid: int, seasons: str = None):
+    """Where this title's (or the given seasons') live copies sit right
+    now: one entry per distinct top-level place (drive root / library
+    root), with file counts and mount state. Powers the move dialog's
+    'remove from which places?' checklist."""
+    _get_title_or_404(tid)
+    want = None
+    if seasons:
+        try:
+            want = {int(s) for s in seasons.split(",")}
+        except ValueError:
+            raise HTTPException(400, "seasons must be comma-separated ints")
+    roots = sorted((r["path"] for r in db.q(
+        "SELECT path FROM roots WHERE enabled=1")),
+        key=len, reverse=True)
+    internal = db.settings_get("internal_root")
+    places: dict = {}
+
+    def _place_of(p: str) -> Optional[str]:
+        ap = os.path.abspath(p)
+        for r in roots:
+            if ap == r or ap.startswith(r.rstrip(os.sep) + os.sep):
+                return r
+        return None
+
+    out = {}
+    for f in db.q("SELECT season, path FROM files WHERE title_id=? AND missing=0",
+                  (tid,)):
+        if want is not None and (f["season"] if f["season"] is not None
+                                 else 1) not in want:
+            continue
+        place = _place_of(f["path"])
+        if not place or not os.path.exists(f["path"]):
+            continue
+        e = out.setdefault(place, {"root": place, "files": 0,
+                                   "mounted": os.path.isdir(place)})
+        e["files"] += 1
+    return {"locations": sorted(out.values(), key=lambda e: e["root"])}
 
 
 # ---- watch next (pin to top + copy into the aaNext_* slot) -----------------

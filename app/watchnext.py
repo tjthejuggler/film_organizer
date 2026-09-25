@@ -107,7 +107,7 @@ def set_next(job_id: str, title_id: int):
                            title_id, path, is_dir, size_bytes, mtime,
                            season, episode, watched_folder, missing,
                            last_seen, created)
-                       VALUES(?,?,0,?,?,?,?,?,?,0,?)""",
+                       VALUES(?,?,0,?,?,?,?,?,0,?,?)""",
                     (title_id, dest, f["size_bytes"], f["mtime"],
                      f["season"], f["episode"],
                      1 if parser.watched_marker(dest) is True else 0,
