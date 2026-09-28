@@ -138,6 +138,7 @@ def movie_detail(tmdb_id: int) -> dict:
         "imdb_id": (d.get("external_ids") or {}).get("imdb_id"),
         "title": d.get("title"),
         "original_title": d.get("original_title"),
+        "lang": d.get("original_language"),
         "year": _year_of(d.get("release_date")) or None,
         "overview": d.get("overview"),
         "tagline": d.get("tagline"),
@@ -164,6 +165,7 @@ def tv_detail(tmdb_id: int) -> dict:
         "imdb_id": (d.get("external_ids") or {}).get("imdb_id"),
         "title": d.get("name"),
         "original_title": d.get("original_name"),
+        "lang": d.get("original_language"),
         "year": _year_of(d.get("first_air_date")) or None,
         "overview": d.get("overview"),
         "tagline": d.get("tagline"),
@@ -198,6 +200,17 @@ def tv_calendar(tmdb_id: int) -> dict:
             for s in d.get("seasons", []) if (s.get("season_number") or 0) > 0
         ],
     }
+
+
+def original_language(tmdb_id: int, kind: str):
+    """Original language, ISO 639-1 ('en', 'it') — TMDB original_language.
+    Drives the catalog's Language column; backfill-only (full enriches
+    already carry it inside the detail payload)."""
+    try:
+        path = f"/tv/{tmdb_id}" if kind == "series" else f"/movie/{tmdb_id}"
+        return _get(path).get("original_language") or None
+    except Exception:
+        return None
 
 
 def tv_type(tmdb_id: int):

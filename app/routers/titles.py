@@ -38,6 +38,7 @@ class TitlePatch(BaseModel):
     network: Optional[str] = None
     status: Optional[str] = None
     cert: Optional[str] = None
+    lang: Optional[str] = None
     runtime: Optional[int] = None
     seasons: Optional[int] = None
     episodes: Optional[int] = None
@@ -195,7 +196,7 @@ def get_title(tid: int):
 
 DETAIL_FIELDS = {
     "overview": str, "director": str, "creator": str, "network": str,
-    "status": str, "cert": str, "runtime": int, "seasons": int,
+    "status": str, "cert": str, "lang": str, "runtime": int, "seasons": int,
     "episodes": int, "rating_imdb": float, "votes_imdb": int,
     "rating_tmdb": float, "rating_rt": int, "rating_mc": int,
 }

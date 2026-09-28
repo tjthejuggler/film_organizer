@@ -149,6 +149,12 @@ td { padding: 8px; vertical-align: top; }
   border-radius: 4px; font-size: 11.5px; font-weight: 700; letter-spacing: .3px;
   color: var(--text); background: rgba(255,255,255,.04);
 }
+/* original-language code (EN, IT...): same chip shape as .cert, dimmer */
+.lang {
+  display: inline-block; padding: 1px 6px; border: 1.5px solid var(--dim);
+  border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: .5px;
+  color: var(--dim); background: rgba(255,255,255,.03);
+}
 .rt-head { font-size: 15px; }
 .rt { font-weight: 700; font-size: 12.5px; }
 /* tier bands (RT % and MC Metascore): blue top, then green, yellow, red */

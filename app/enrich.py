@@ -17,7 +17,7 @@ def _apply(row_id: int, data: dict, source: str, status="matched", manual_edits=
     sets, vals = [], []
     colmap = {
         "tmdb_id": "tmdb_id", "imdb_id": "imdb_id", "title": "title",
-        "original_title": "original_title", "year": "year",
+        "original_title": "original_title", "lang": "lang", "year": "year",
         "overview": "overview", "tagline": "tagline", "genres": "genres",
         "stars": "stars", "director": "director", "creator": "creator",
         "network": "network", "seasons": "seasons", "episodes": "episodes",
@@ -486,9 +486,10 @@ def run_backfill(job_id: str):
     so rows self-heal if providers later add the data."""
     from .jobs import log, update
 
-    rows = q("""SELECT id, title, tmdb_id, imdb_id, kind, cert, rating_rt, rating_mc, is_miniseries, manual_edits, backfill_miss FROM titles
+    rows = q("""SELECT id, title, tmdb_id, imdb_id, kind, cert, lang, rating_rt, rating_mc, is_miniseries, manual_edits, backfill_miss FROM titles
                 WHERE match_status='matched' AND tmdb_id IS NOT NULL
                   AND (cert IS NULL
+                       OR lang IS NULL
                        OR (kind='series' AND is_miniseries=0)
                        OR (imdb_id IS NOT NULL AND (rating_rt IS NULL OR rating_mc IS NULL)))
                   AND (backfill_miss IS NULL OR backfill_miss < ?)""",
@@ -508,6 +509,14 @@ def run_backfill(job_id: str):
                 if c:
                     sets.append("cert=?"); vals.append(c)
                     goals_met.append("cert")
+            # language catch-up: rows matched before the column existed (or
+            # before enrich carried it) get it from the same TMDB lookup the
+            # backfill already pays for
+            if row["lang"] is None and "lang" not in locked and tmdb.enabled():
+                lg = tmdb.original_language(row["tmdb_id"], row["kind"])
+                if lg:
+                    sets.append("lang=?"); vals.append(lg)
+                    goals_met.append("lang")
             # miniseries catch-up: TMDB marks limited series via its TV
             # 'type' field; already-matched rows never got this because the
             # default Enrich skips them (and the scanner used to overwrite

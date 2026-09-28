@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS titles(
     enrich_attempts INTEGER DEFAULT 0,  -- failed full-enrich passes; capped (see migrations)
     backfill_miss  INTEGER DEFAULT 0,   -- backfill passes that found nothing; capped
     cert           TEXT,
+    lang           TEXT,  -- original language, ISO 639-1 ('en', 'it'); shown uppercase
     rating_rt      INTEGER,
     wanted         INTEGER DEFAULT 0,
     wanted_note    TEXT,
@@ -240,6 +241,10 @@ def ensure():
         # Metacritic Metascore 0-100 (OMDb 'Metascore'; TMDB has none)
         if "rating_mc" not in cols:
             con.execute("ALTER TABLE titles ADD COLUMN rating_mc INTEGER")
+        # original language, ISO 639-1 ('en', 'it'...): TMDB original_language;
+        # shown uppercase in the catalog's Language column
+        if "lang" not in cols:
+            con.execute("ALTER TABLE titles ADD COLUMN lang TEXT")
         # 'seen' == 'watched' merge (one-shot): seen-log rows become watched
         # so one flag drives badges/filters everywhere. history stays as the
         # "no file owned" marker (scanner survival), but no longer implies

@@ -133,6 +133,7 @@ export function renderRows() {
       <td>${t.year || "—"}</td>
       <td class="c">${fmtRuntime(t)}</td>
       <td class="c">${t.cert ? `<span class="cert">${esc(t.cert)}</span>` : "—"}</td>
+      <td class="c">${t.lang ? `<span class="lang" title="Original language">${esc(String(t.lang).toUpperCase())}</span>` : "—"}</td>
       <td class="c">${rating ? `<span class="rating">★ ${rating.toFixed(1)}</span>` : "—"}</td>
       <td class="c">${t.rating_rt != null ? `<span class="rt ${rtTier(t.rating_rt)}">${t.rating_rt}%</span>` : "—"}</td>
       <td class="c">${t.avg_rating != null ? `<span class="avgrating" title="Average of IMDb / TMDB / RT / Metacritic (those that have a score)">${t.avg_rating.toFixed(1)}</span>` : "—"}</td>

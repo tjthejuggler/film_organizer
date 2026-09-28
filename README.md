@@ -37,6 +37,20 @@ The LLM is preconfigured for **z.ai** (`https://api.z.ai/api/paas/v4`, model
 release names when normal TMDB matching fails. Use the **Test TMDB** /
 **Test LLM** buttons in Settings to verify keys immediately.
 
+- **2026-09-27** — **Language column in the main catalog table**. A new slim
+  `Lang` column (between Cert. and IMDb) shows the title's original language
+  as an uppercase code chip (EN, IT, JA…), sourced from TMDB's
+  `original_language`. Stored in the new nullable
+  [`titles.lang`](app/db.py) column (auto-migrates on boot); full
+  Enrich carries it ([`tmdb.movie_detail`](app/tmdb.py) /
+  [`tmdb.tv_detail`](app/tmdb.py)), already-matched rows get it via the
+  Backfill pass ([`enrich.run_backfill`](app/enrich.py) +
+  [`tmdb.original_language`](app/tmdb.py)), and it is manually correctable
+  through the edit form's `lang` field ([`TitlePatch`](app/routers/titles.py))
+  with the usual enrich-lock protection. Rendered in
+  [`list.js`](static/js/list.js) with a matching `.lang` chip style
+  ([`style.css`](static/style.css)).
+
 - **2026-09-24 (later)** — **Move/consolidate correctness fixes** after the
   'Top of the Lake already on the T5' follow-up:
   * **Catalog poisoning fixed** ([`watchnext.py`](app/watchnext.py)): the Watch
