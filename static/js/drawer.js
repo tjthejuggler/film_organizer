@@ -244,10 +244,11 @@ export async function openDrawer(id) {
       updateEpProgress(r);
     } catch (err) { alert(err.message); }
   };
-  const doMove = async (target, destRoot, purgeRoots) => {
+  const doMove = async (target, destRoot, purgeRoots, sel) => {
     const body = { target, purge_others: true };
     if (destRoot) body.dest_root = destRoot;
     if (purgeRoots) body.purge_roots = purgeRoots;
+    if (sel && sel.length) body.seasons = sel;
     try {
       const r = await api(`/api/titles/${id}/move`, { method: "POST", body });
       if (r.queued) {
@@ -262,7 +263,7 @@ The move was queued and runs automatically when it is connected (Settings → Dr
   // the move fires; single-copy titles move without the extra popup
   const moveFlow = (target, destRoot, sel) => {
     openSrcPicker(t.title, id, sel, destRoot, purgeRoots => {
-      doMove(target, destRoot, purgeRoots);
+      doMove(target, destRoot, purgeRoots, sel);
     });
   };
   $("#dAnyFolder").onclick = () => openDestPicker(t.title, (target, root) => {

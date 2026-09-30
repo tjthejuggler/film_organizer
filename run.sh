@@ -10,4 +10,4 @@ fi
 # 0.0.0.0 = reachable from other devices on the LAN; app-level security is
 # enforced by the device gate (see app/pairing.py): remote devices must pair
 # via the QR code shown in Settings.  Loopback stays trusted automatically.
-exec ./.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8765
+exec ./.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8964

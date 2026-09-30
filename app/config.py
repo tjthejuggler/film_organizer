@@ -11,7 +11,11 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 # Loopback stays trusted automatically.  pairing.lan_urls() detects the
 # real LAN address for the QR code when HOST is the wildcard.
 HOST = "0.0.0.0"
-PORT = 8765
+# Dedicated port for this app. Each local webapp must own a unique port
+# (registry: README.md "Webapp port registry") so launchers never collide.
+# 8765 was taken by another app (Progress Tracker), which made the launcher
+# open the wrong UI. 8964 is reserved for Film Organizer.
+PORT = 8964
 
 # Initial library roots (first boot seeds these when the table is empty).
 DEFAULT_ROOTS = [

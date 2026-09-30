@@ -12,9 +12,22 @@ anything when you want to watch it.
 ```
 
 Starts the server if it isn't running yet, then opens
-<http://127.0.0.1:8765> in your browser. Safe to run again while the app
-is up (it just re-opens the UI). The plain server starter is still
-available as `./run.sh`.
+<http://127.0.0.1:8964> in your browser. Safe to run again while the app
+is up (it just re-opens the UI); the launcher also verifies the page title
+so it can never mistake another webapp for this one. The plain server
+starter is still available as `./run.sh`.
+
+### Webapp port registry
+
+Several local webapps run side by side, so **each app owns one dedicated
+port** — launchers must always use their app's registered port:
+
+| Port  | App                    |
+|-------|------------------------|
+| 8765  | Progress Tracker       |
+| 8964  | **Film Organizer** (this app) |
+
+When adding a new webapp, pick an unused port and add a row here.
 
 This launcher is registered in the **MyApps** tray launcher
 (`~/Projects/MyApps/script_items.json`) with the clapperboard icon.
@@ -294,7 +307,7 @@ release names when normal TMDB matching fails. Use the **Test TMDB** /
   6-digit pairing code. The code is shown only in **⚙ Settings → Devices on
   this network** as a QR code ([`app/qrsvg.py`](app/qrsvg.py) wraps the
   `qrcode` package; new dep in [`requirements.txt`](requirements.txt)) encoding
-  `http://<lan-ip>:8765/pair?code=NNNNNN`. Codes are one-shot and expire after
+  `http://<lan-ip>:8964/pair?code=NNNNNN`. Codes are one-shot and expire after
   5 minutes; loopback is always trusted; devices can be revoked at any time
   (token hashes only are stored — SHA-256). Verified end-to-end: unpaired
   remote 403 → scan → paired 200 → replay 400 → revoke → 403 again.
