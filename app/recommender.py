@@ -262,7 +262,19 @@ def _research_once(profile: str, count: int) -> dict:
     return r.json()
 
 
+def _content_text(msg: dict):
+    """Assistant content as a plain string. Some gateways (z.ai) return
+    content as a LIST of blocks [{'type':'text','text':…}, …] — joining the
+    text blocks keeps _extract_json from choking ('list' has no .strip)."""
+    c = msg.get("content")
+    if isinstance(c, list):
+        return "".join(b.get("text", "") for b in c if isinstance(b, dict))
+    return c or ""
+
+
 def _extract_json(text: str) -> dict:
+    if not isinstance(text, str):
+        return {}
     text = re.sub(r"^```(?:json)?|```$", "", (text or "").strip(), flags=re.M).strip()
     try:
         return json.loads(text)
@@ -292,7 +304,7 @@ def run_research(job_id: str, count: int = BATCH_SIZE) -> int:
 
     data = _research_once(profile, count)
     msg = (data.get("choices") or [{}])[0].get("message", {})
-    content = msg.get("content")
+    content = _content_text(msg)
     if not content and msg.get("tool_calls"):
         # some gateways return tool call transcripts without a final answer
         raise RuntimeError("model stopped after tool calls without a final answer")
@@ -327,7 +339,7 @@ def run_research(job_id: str, count: int = BATCH_SIZE) -> int:
         r.raise_for_status()
         data = r.json()
         msg = (data.get("choices") or [{}])[0].get("message", {})
-        content = msg.get("content")
+        content = _content_text(msg)
         parsed = _extract_json(content or "")
         items = parsed.get("recommendations") or []
 

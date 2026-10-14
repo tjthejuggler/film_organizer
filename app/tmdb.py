@@ -183,6 +183,22 @@ def tv_detail(tmdb_id: int) -> dict:
     }
 
 
+def season_episodes(tmdb_id: int, season: int) -> dict:
+    """Episode scheduling facts for one TV season from the season endpoint:
+    {"finale": <last air date or None>, "episodes": <episode count>,
+     "same_day": True for an all-at-once drop}. "finale" is only set when
+    EVERY episode of the season carries an air date — a partially
+    scheduled season's newest date is just the latest known episode, not
+    the finale."""
+    d = _get(f"/tv/{tmdb_id}/season/{season}")
+    eps = d.get("episodes") or []
+    dates = [e.get("air_date") for e in eps if e.get("air_date")]
+    full = bool(eps) and len(dates) == len(eps)
+    return {"finale": max(dates) if full else None,
+            "episodes": len(eps),
+            "same_day": full and len(dates) > 1 and len(set(dates)) == 1}
+
+
 def tv_calendar(tmdb_id: int) -> dict:
     """Season-level airing info for the season-calendar checker: status,
     next/last episode air dates and the per-season episode counts."""

@@ -60,14 +60,21 @@ def _recent_since() -> str:
 
 def _recent_span(rc: dict) -> tuple:
     """(release_kind, release_end) for a recently aired season. An
-    all-at-once drop has first == last air date; otherwise the last AIRED
-    episode is the floor and (episodes-1) weeks after the start the usual
-    weekly ceiling estimate."""
+    all_at-once drop has first == last air date. A season that is STILL
+    AIRING gets its scheduled finale — (episodes-1) weeks after the start,
+    the usual weekly ceiling estimate — NOT the last already-aired episode;
+    once the season has fully aired, its last aired date IS the finale."""
     start, eps = rc["start"], rc.get("episodes") or 0
     if rc["last_ep_date"] == start and eps > 1:
         return "all_at_once", start
     end = rc["last_ep_date"] or None
-    if not end and start and eps > 1:
+    if rc.get("airing") and start and eps > 1:
+        try:
+            end = (datetime.strptime(start, "%Y-%m-%d")
+                   + timedelta(weeks=eps - 1)).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    elif not end and start and eps > 1:
         try:
             end = (datetime.strptime(start, "%Y-%m-%d")
                    + timedelta(weeks=eps - 1)).strftime("%Y-%m-%d")
@@ -169,27 +176,54 @@ def _probe(title_id: int) -> dict:
                          "start": (s_info.get("air_date")
                                    or last_ep["air_date"])[:10],
                          "episodes": s_info.get("episodes"),
-                         "last_ep_date": last_ep["air_date"][:10]}
+                         "last_ep_date": last_ep["air_date"][:10],
+                         # still airing this season? then last_ep_date is
+                         # just the newest aired episode, not the finale
+                         "airing": next_ep.get("season_number") == la_s}
 
     nxt = next_ep.get("season_number")
     if nxt and nxt > base:
         # TMDB already schedules episodes of the next season
         out.update(next_season=nxt, release_start=(next_ep.get("air_date") or "")[:10])
-        # season fully scheduled? last episode of that season gives the range
+        # the REAL finale: the season's own episode list carries the last
+        # air date when fully scheduled (the show payload doesn't). One
+        # extra request per announced season — only for future seasons.
+        eps_n, sched = 0, {}
+        try:
+            sched = tmdb.season_episodes(row["tmdb_id"], nxt)
+            out["release_end"] = sched["finale"]
+            eps_n = sched["episodes"]
+        except Exception:
+            out["release_end"] = None
         s_info = seasons.get(nxt) or {}
+        eps_n = max(eps_n, s_info.get("episodes") or 0)
+        if out["release_end"] and out["release_end"] == out["release_start"] \
+                and not sched.get("same_day"):
+            # only the PREMIERE is scheduled — that is not a finale date
+            # (a real all-at-once drop keeps same_day=True)
+            out["release_end"] = None
         last = last_ep.get("season_number")
-        if last == nxt and last_ep.get("air_date"):
+        if not out["release_end"] and last == nxt and last_ep.get("air_date"):
             out["release_end"] = last_ep["air_date"][:10]
-        elif s_info.get("episodes"):
+        if not out["release_end"] and eps_n <= 1:
+            # TMDB parks a placeholder count of 1 on a barely-announced
+            # season — borrow the last AIRED season's episode count
+            prev = [s for s in seasons.values()
+                    if s.get("season", 99) < nxt and s.get("episodes")]
+            eps_n = max((s["episodes"] for s in prev), default=0)
+        if not out["release_end"] and eps_n > 1:
             # weekly cadence assumption: (episodes-1) weeks after the start
             try:
                 start = datetime.strptime(out["release_start"], "%Y-%m-%d")
-                out["release_end"] = (start + timedelta(weeks=s_info["episodes"] - 1)) \
+                out["release_end"] = (start + timedelta(weeks=eps_n - 1)) \
                     .strftime("%Y-%m-%d")
             except ValueError:
                 pass
-        out["release_kind"] = "weekly" if out.get("release_end") \
-            and out["release_end"] != out["release_start"] else "unknown"
+        if sched.get("same_day"):
+            out["release_kind"] = "all_at_once"
+        else:
+            out["release_kind"] = "weekly" if out.get("release_end") \
+                and out["release_end"] != out["release_start"] else "unknown"
         return out
 
     # no next episode: either between seasons (vague) or finished
