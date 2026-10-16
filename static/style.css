@@ -399,10 +399,14 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 
 /* recommender */
 .btn.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+.recbtn { /* anchors the corner count badge; flex centers the svg */
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+}
 .recpill {
-  display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 5px;
-  border-radius: 99px; background: rgba(255,255,255,.25); font-size: 11px;
-  font-weight: 700; text-align: center; line-height: 17px; vertical-align: 1px;
+  position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px;
+  border-radius: 99px; background: var(--acc); color: #fff; font-size: 10.5px;
+  font-weight: 700; display: flex; align-items: center; justify-content: center;
+  padding: 0 4px; pointer-events: none; border: 1px solid var(--panel);
 }
 .recsheet { max-width: 680px; width: 92vw; }
 .recback {
@@ -429,11 +433,14 @@ tr.is-history .thumb.ph::before { content: "👁"; }
 .recstars { font-size: 12.5px; color: var(--dim); margin: 4px 0; }
 .recfeedback { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 .recseen { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 8px; }
-#recNote {
+#recNote, #recGuide {
   width: 100%; background: var(--panel2); border: 1px solid var(--line);
   color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px;
   font-family: inherit; resize: vertical;
 }
+#recGuide { font-style: italic; color: var(--dim); }
+#recGuide:focus { font-style: normal; color: var(--text); }
+.recguideexamples { font-size: 12px; margin-top: 6px; }
 .recactions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 .recleft { margin-left: auto; font-size: 12px; }
 .badge.mini { border-color: #b06ad4; color: #d9aef0; }

@@ -23,6 +23,14 @@ class RecPeekIn(BaseModel):
     count: int = 10
 
 
+class RecRefillIn(BaseModel):
+    """Manual 'research now' request. guidance: free-text focus for this
+    batch — as specific ("Korean heist thrillers") or loose ("something
+    cozy") as the user wants; force: run even if the queue looks healthy."""
+    guidance: Optional[str] = None
+    force: bool = False
+
+
 @router.get("/api/recommendations/status")
 def rec_status():
     """Queue health for the header badge; also opportunistically triggers
@@ -70,15 +78,22 @@ def rec_next():
 
 
 @router.post("/api/recommendations/refill")
-def rec_refill():
-    """Manual 'research now' trigger (also used automatically)."""
+def rec_refill(body: RecRefillIn = None):
+    """Manual 'research now' trigger (also used automatically).
+    With force/guidance the low-water check is bypassed — the user
+    explicitly asked for a fresh batch RIGHT NOW."""
+    body = body or RecRefillIn()
+    guidance = (body.guidance or "").strip() or None
+    force = body.force or bool(guidance)
     if not recommender.enabled():
         raise HTTPException(400, "no LLM API key configured (Settings)")
     pending = recommender.pending_count()
-    jid = recommender.maybe_refill(f"manual (pending={pending})")
+    jid = recommender.maybe_refill(
+        f"manual (pending={pending})", force=force, guidance=guidance)
     if jid:
-        return {"ok": True, "job_id": jid, "pending": pending}
-    if pending > recommender.QUEUE_LOW:
+        return {"ok": True, "job_id": jid, "pending": pending,
+                "forced": force, "guidance": guidance}
+    if not force and pending > recommender.QUEUE_LOW:
         return {"ok": True, "job_id": None,
                 "detail": f"queue healthy ({pending} pending — no refill needed)"}
     raise HTTPException(409, "a research job is already running")

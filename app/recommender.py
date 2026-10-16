@@ -33,7 +33,25 @@ BATCH_SIZE = 8         # titles per research run — small batches finish fast;
 
 # the gateway is SILENT while the model runs MCP tool calls server-side —
 # the read timeout must span the whole research chain, not one HTTP exchange
-RESEARCH_TIMEOUT = httpx.Timeout(connect=30.0, read=900.0, write=60.0, pool=30.0)
+RESEARCH_TIMEOUT = httpx.Timeout(connect=30.0, read=330.0, write=60.0, pool=30.0)
+
+
+def _post_with_deadline(url, headers, payload, timeout, wall_s: float):
+    """httpx.post with a hard WALL-CLOCK cap. MCP streamable-http responses
+    drip keep-alive chunks that continually reset the read timeout, so the
+    only reliable way to cut off a stalled research chain is to abandon the
+    call from our side and move on to the fallback."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = ex.submit(httpx.post, url, headers=headers, json=payload,
+                        timeout=timeout)
+        return fut.result(timeout=wall_s)
+    except FutTimeout:
+        raise httpx.TimeoutException(
+            f"wall-clock budget of {wall_s:.0f}s exceeded")
+    finally:
+        ex.shutdown(wait=False)
 
 # cap each prompt section so one giant library can't blow the context
 CAP_SECTIONS = 60
@@ -234,8 +252,11 @@ def _mcp_tool_header_auth() -> bool:
     return True
 
 
-def _research_once(profile: str, count: int) -> dict:
-    """Single research chat call with both MCP servers attached."""
+def _research_once(profile: str, count: int, guidance: str = None) -> dict:
+    """Single research chat call with both MCP servers attached.
+    guidance: optional free-text focus from the user ("Korean heist
+    thrillers", "something cozy under 45 min an episode", …) — specific
+    guidance overrides general taste-matching for this batch."""
     base = (db.settings_get("llm_base_url") or "").rstrip("/")
     key = db.settings_get("llm_api_key")
     model = db.settings_get("llm_model") or "glm-5.3-flash"
@@ -245,19 +266,23 @@ def _research_once(profile: str, count: int) -> dict:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content":
                 f"{profile}\n### Task\nResearch the web and recommend "
-                f"exactly {count} new titles now."},
+                f"exactly {count} new titles now."
+                + (f"\n\n### User guidance for THIS batch (highest priority — "
+                   f"honor it as closely as you can; where it conflicts with "
+                   f"their usual taste, the guidance wins):\n{guidance}"
+                   if guidance else "")},
         ],
         "tools": [MCP_SEARCH, MCP_READER],
         "tool_choice": "auto",
         "temperature": 0.6,
-        "max_tokens": 8000,
+        "max_tokens": 16000,
+        # reasoning models burn the whole budget on hidden chain-of-thought
+        # (seen live: 7995/8000 tokens reasoning, content empty, finish=length)
+        "thinking": {"type": "disabled"},
     }
-    r = httpx.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {key}"},
-        json=payload,
-        timeout=RESEARCH_TIMEOUT,
-    )
+    r = _post_with_deadline(f"{base}/chat/completions",
+                             {"Authorization": f"Bearer {key}"},
+                             payload, RESEARCH_TIMEOUT, wall_s=240.0)
     r.raise_for_status()
     return r.json()
 
@@ -288,54 +313,93 @@ def _extract_json(text: str) -> dict:
         return {}
 
 
-def run_research(job_id: str, count: int = BATCH_SIZE) -> int:
+def run_research(job_id: str, count: int = BATCH_SIZE,
+                 guidance: str = None) -> int:
     """One research batch: profile -> LLM(+MCP) -> rows in the queue.
+    guidance: optional free-text user focus for this batch.
     Returns the number of recommendations actually stored."""
     from .jobs import log, update
 
+    guidance = (guidance or "").strip() or None
     if not _mcp_tool_header_auth():
         log(job_id, "no LLM API key configured — cannot research")
         return 0
 
     profile = _taste_profile()
     log(job_id, f"Taste profile built ({len(profile)} chars); asking the "
-                f"researcher for {count} recommendations…")
+                f"researcher for {count} recommendations…"
+                + (f" (user guidance: {guidance!r})" if guidance else ""))
     update(job_id, total=1, message="Researching via web search…")
 
-    data = _research_once(profile, count)
+    try:
+        data = _research_once(profile, count, guidance)
+    except httpx.TimeoutException:
+        # a hung MCP tool chain (keep-alives can defeat the read timeout)
+        # must not stall the whole job — fall through to the bounded retries
+        log(job_id, "web-research call timed out — falling back to a "
+                    "bounded knowledge-based batch")
+        data = {"choices": [{"message": {"content": ""}}]}
     msg = (data.get("choices") or [{}])[0].get("message", {})
     content = _content_text(msg)
     if not content and msg.get("tool_calls"):
-        # some gateways return tool call transcripts without a final answer
-        raise RuntimeError("model stopped after tool calls without a final answer")
+        # some gateways end the turn after tool calls with no final text —
+        # don't give up: the strict retries below usually shake the JSON loose
+        log(job_id, "model stopped after tool calls without a final answer "
+                    "— retrying for the JSON")
     parsed = _extract_json(content or "")
     items = parsed.get("recommendations") or []
 
-    if not items:
-        # the model narrated instead of answering — one strict retry with
-        # its own transcript attached so the research isn't wasted
-        log(job_id, "no JSON in first answer; retrying with strict instruction")
+    task_msg = (f"{profile}\n### Task\nResearch the web and recommend "
+                f"exactly {count} new titles now."
+                + (f"\n\n### User guidance for THIS batch (highest priority — "
+                   f"honor it as closely as you can; where it conflicts with "
+                   f"their usual taste, the guidance wins):\n{guidance}"
+                   if guidance else ""))
+    assistant_summary = content or (
+        "(stopped after web-research tool calls — you already did the "
+        "research; now produce the final answer)")
+    base = (db.settings_get("llm_base_url") or "").rstrip("/")
+    key = db.settings_get("llm_api_key")
+    model = db.settings_get("llm_model") or "glm-5.3-flash"
+
+    # Retry ladder: (1) same setup + strict instruction, (2) NO tools so the
+    # model cannot stall in tool mode again and must answer from what it
+    # already gathered.
+    for attempt, attach_tools in enumerate((True, False), start=1):
+        if items:
+            break
+        log(job_id, f"no JSON yet (attempt {attempt}); retrying "
+                    f"{'with' if attach_tools else 'WITHOUT'} tools")
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content":
-                f"{profile}\n### Task\nResearch the web and recommend "
-                f"exactly {count} new titles now."},
-            {"role": "assistant", "content": content or "(stopped early)"},
+            {"role": "user", "content": task_msg},
+            {"role": "assistant", "content": assistant_summary},
             {"role": "user", "content": RETRY_PROMPT.replace("{count}", str(count))},
         ]
         payload = {
-            "model": db.settings_get("llm_model") or "glm-5.3-flash",
+            "model": model,
             "messages": messages,
-            "tools": [MCP_SEARCH, MCP_READER],
-            "tool_choice": "auto",
             "temperature": 0.3,
-            "max_tokens": 8000,
+            "max_tokens": 16000,
+            "thinking": {"type": "disabled"},
         }
-        base = (db.settings_get("llm_base_url") or "").rstrip("/")
-        key = db.settings_get("llm_api_key")
-        r = httpx.post(f"{base}/chat/completions",
-                       headers={"Authorization": f"Bearer {key}"},
-                       json=payload, timeout=RESEARCH_TIMEOUT)
+        if attach_tools:
+            payload["tools"] = [MCP_SEARCH, MCP_READER]
+            payload["tool_choice"] = "auto"
+        # bounded per-attempt budget: a stalled MCP chain can't hold the
+        # job hostage for the full 15-min read timeout
+        timeout = httpx.Timeout(connect=30.0,
+                                read=240.0 if attach_tools else 120.0,
+                                write=60.0, pool=30.0)
+        try:
+            r = _post_with_deadline(f"{base}/chat/completions",
+                                    {"Authorization": f"Bearer {key}"},
+                                    payload, timeout,
+                                    wall_s=240.0 if attach_tools else 150.0)
+        except httpx.TimeoutException:
+            log(job_id, f"retry attempt {attempt} timed out — "
+                        "moving to the next fallback")
+            continue
         r.raise_for_status()
         data = r.json()
         msg = (data.get("choices") or [{}])[0].get("message", {})
@@ -349,9 +413,17 @@ def run_research(job_id: str, count: int = BATCH_SIZE) -> int:
 
     known = _known_title_keys()
     stored, skipped = 0, 0
+    import re as _re
     for it in items:
         title = (it.get("title") or "").strip()
         if not title:
+            continue
+        # the model sometimes echoes schema placeholders as literal rows
+        if (_re.match(r"(?i)^(placeholder|string|example|example title|title)\b", title)
+                or (it.get("why") or "").strip().lower() == "placeholder"):
+            skipped += 1
+            from .jobs import log
+            log(job_id, f"dropped (placeholder row): {title}")
             continue
         # HARD catalog filter: the prompt already lists exclusions, but the
         # model sometimes ignores them (seen live with Severance). Anything
@@ -523,11 +595,18 @@ def refill_guard() -> bool:
     return False
 
 
-def maybe_refill(reason: str = "auto") -> str | None:
+def maybe_refill(reason: str = "auto", force: bool = False,
+                 guidance: str = None) -> str | None:
     """Start a refill job when the queue is at/below QUEUE_LOW.
+    force: run even when the queue is healthy/empty (the user clicked the
+    "go research now" button — optionally with free-text guidance).
+    An EMPTY queue is never auto-refilled: the popup shows the guided
+    composer instead, and research only starts when the user asks.
     Returns the job id or None."""
-    if pending_count() > QUEUE_LOW:
-        return None
+    if not force:
+        pending = pending_count()
+        if pending == 0 or pending > QUEUE_LOW:
+            return None
     if not enabled():
         return None
     if not refill_guard():
@@ -535,9 +614,14 @@ def maybe_refill(reason: str = "auto") -> str | None:
     from . import jobs
     jid = jobs.create("recommend", total=1)
     jobs.log(jid, f"Refill triggered ({reason}): "
-                  f"{pending_count()} pending -> target {QUEUE_TARGET}")
+                  f"{pending_count()} pending -> target {QUEUE_TARGET}"
+                  + (" [forced]" if force else ""))
+    if guidance:
+        jobs.log(jid, f"User guidance: {guidance!r}")
     need = max(BATCH_SIZE, QUEUE_TARGET - pending_count())
-    jobs.run_background(jid, lambda j: run_research(j, count=min(need, BATCH_SIZE)))
+    count = min(need, 16 if (force or guidance) else BATCH_SIZE)
+    jobs.run_background(jid, lambda j: run_research(
+        j, count=count, guidance=guidance))
     return jid
 
 
