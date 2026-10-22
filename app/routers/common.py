@@ -118,8 +118,12 @@ def _filter_clause(q=None, kind=None, watched=None, match=None, genre=None,
         where.append("t.genres LIKE ?")
         params.append(f'%"{genre}"%')
     if root:
-        where.append("EXISTS (SELECT 1 FROM files f WHERE f.title_id=t.id AND f.path LIKE ?)")
-        params.append(f"{root}%")
+        # missing=1 rows are deleted/moved-away copies — counting them made
+        # ghost titles (files gone from that location) survive the filter,
+        # which looked like the location filter doing nothing
+        where.append("EXISTS (SELECT 1 FROM files f WHERE f.title_id=t.id "
+                     "AND f.missing=0 AND f.path LIKE ?)")
+        params.append(f"{root.rstrip('/')}/%")
     if missing_on == "1":
         where.append("EXISTS (SELECT 1 FROM files f WHERE f.title_id=t.id AND f.missing=1)")
     if cert:
